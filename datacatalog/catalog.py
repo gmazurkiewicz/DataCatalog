@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS journal (
     size      INTEGER,
     detail    TEXT
 );
+-- Snapshot of the partner drive's files taken at the last synchronization.
+-- Lets the app tell which side changed since then, even with one drive connected.
+CREATE TABLE IF NOT EXISTS partner_files (
+    path      TEXT PRIMARY KEY,
+    size      INTEGER NOT NULL,
+    mtime_ns  INTEGER NOT NULL,
+    hash      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_partner_hash ON partner_files(hash);
 CREATE TABLE IF NOT EXISTS q_batches (
     id          TEXT PRIMARY KEY,
     created_at  REAL NOT NULL,
@@ -219,3 +228,33 @@ class Catalog:
             "quarantined_bytes": quarantined[1],
             "excludes": self.excludes(),
         }
+
+    # --- partner / synchronization helpers ---
+    def partner(self):
+        """Info about the paired drive and the last synchronization, or None."""
+        return self.get_meta("partner")
+
+    def journal_max_id(self):
+        return self.q1("SELECT COALESCE(MAX(id), 0) FROM journal")[0]
+
+    def journal(self, op, path, hash_=None, size=None, batch=None, detail=None):
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO journal(ts,host,op,batch,path,hash,size,detail) VALUES(?,?,?,?,?,?,?,?)",
+                (time.time(), hostname(), op, batch, path, hash_, size, detail),
+            )
+
+    def upsert_file(self, rel, size, mtime_ns, hash_):
+        """Record a file the app has just written (hash already verified)."""
+        from . import paths
+
+        now = time.time()
+        with self.lock:
+            self.conn.execute(
+                """INSERT INTO files(path,dir,name,size,mtime_ns,hash,hashed_at,verified_at,status,corrupt,q_batch)
+                   VALUES(?,?,?,?,?,?,?,?,'ok',0,NULL)
+                   ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime_ns=excluded.mtime_ns,
+                     hash=excluded.hash, hashed_at=excluded.hashed_at, verified_at=excluded.verified_at,
+                     status='ok', corrupt=0, q_batch=NULL""",
+                (rel, paths.parent_of(rel), paths.name_of(rel), size, mtime_ns, hash_, now, now),
+            )

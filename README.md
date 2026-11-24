@@ -10,7 +10,7 @@ The runtime uses the Python standard library only (Python 3.10+). The project is
 ## Status
 
 - **Stage 1 (done):** scanning, duplicate analysis, quarantine, integrity verification, web UI.
-- **Stage 2 (planned):** comparing and synchronizing the main drive with its backup (A ↔ B).
+- **Stage 2 (done):** comparing and synchronizing the main drive with its backup (one-way mirror A → B).
 - **Stage 3 (planned):** drive health (SMART via `smartmontools`).
 
 ## Running
@@ -56,6 +56,29 @@ Options: `--port 8765`, `--open E:\` (open a drive right away), `--no-browser`, 
    size and modification time but different content is listed under **Problems**. If a good copy
    exists on the drive, it can be repaired with one click.
 
+## Synchronization (Sync tab)
+
+The main drive is mirrored to the backup drive. Open the main drive, connect the backup and pick it
+on the Sync tab (or initialize it there as "Backup"). **Compare** scans both drives incrementally and
+builds a plan. Nothing changes until you review it and click **Run sync**.
+
+| Difference | Default action |
+|---|---|
+| New on main | copy to backup |
+| Changed on main (since the last sync) | copy to backup, the old version goes to the backup's quarantine |
+| Moved or renamed on main | rename on backup (no copying) |
+| Removed from main by DataCatalog, or still on main at another path | move to the backup's quarantine |
+| Missing on main without a recorded deletion | copy back from backup |
+| Only on backup | copy to main (or remove from backup) |
+| Corrupted on one drive, good on the other | repair from the good copy |
+| Changed on backup, or on both drives | conflict - skipped until you choose |
+| Different content, no sync history | main wins |
+
+Every action can be changed per difference type or per file. After a run each drive stores a
+snapshot of the other drive's file list; this is how the next compare knows which side changed.
+Every copied file is hashed while copying and must match its catalog checksum, it is written to a
+temporary name, flushed to disk and only then renamed into place. Modification times are preserved.
+
 ## Safety rules
 
 - A file is moved to quarantine only if at least one of its copies stays on the drive and is not
@@ -64,8 +87,10 @@ Options: `--port 8765`, `--open E:\` (open a drive right away), `--no-browser`, 
   the file being moved has not changed since the scan.
 - A file with suspected corruption is never treated as a "good copy".
 - The quarantine is on the same drive, so moves are instant and reversible.
-- Every operation is recorded in the journal (`journal` table). Stage 2 synchronization will use it to
-  tell deliberate deletions apart from files that vanished.
+- Every operation is recorded in the journal (`journal` table). Synchronization uses it to tell
+  deliberate deletions apart from files that vanished.
+- Synchronization never deletes permanently by default: removed and replaced files go to the target
+  drive's quarantine. A file that changed after compare is skipped.
 - By default the server only listens on this computer (127.0.0.1). Network access requires a password.
 
 ## Design notes
@@ -87,6 +112,7 @@ datacatalog/drives.py       drive detection (Windows: ctypes, Linux: /proc/mount
 datacatalog/scanner.py      incremental scan, hashing, verification
 datacatalog/analysis.py     per-folder duplicate statistics, identical folders
 datacatalog/quarantine.py   safe move/restore/purge, repair from a good copy
+datacatalog/sync.py         compare plan and verified one-way mirror to the backup drive
 datacatalog/server.py       HTTP JSON API + static files
 datacatalog/static/         web UI (plain HTML/CSS/JS, no build step)
 tests/                      pytest tests

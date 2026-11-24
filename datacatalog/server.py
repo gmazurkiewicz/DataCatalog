@@ -11,7 +11,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, analysis, drives, paths, quarantine
+from . import __version__, analysis, drives, paths, quarantine, sync
 from . import catalog as catmod
 from .scanner import Job, Scanner
 
@@ -30,6 +30,7 @@ class App:
         self.job = None
         self.thread = None
         self.cache = analysis.AnalysisCache()
+        self.partner = None  # second drive, used for synchronization
         self.lock = threading.RLock()
 
     # --- helpers ---
@@ -66,6 +67,9 @@ class App:
                 self.cat = None
             self.cache = analysis.AnalysisCache()
             self.job = None
+            if self.partner is not None and os.path.realpath(self.partner.root) == os.path.realpath(root):
+                self.partner.close()
+                self.partner = None
             self.cat = catmod.Catalog(root)
             self.cache.invalidate_and_rebuild(self.cat)
 
@@ -129,6 +133,7 @@ class App:
         if self.cat:
             out["catalog"] = self.cat.summary()
             out["catalog"]["include"] = self.cat.get_meta("include", [])
+            out["catalog"]["partner"] = self.cat.partner()
             a = self.cache.current
             out["analysis"] = {
                 "building": self.cache.building,
@@ -139,6 +144,8 @@ class App:
                 "wasted_bytes": a.wasted_bytes if a else None,
                 "identical_groups": len(a.identical) if a else None,
             }
+        if self.partner:
+            out["partner"] = {"volume": self.partner.info, "root": self.partner.root}
         if self.job:
             out["job"] = self.job.to_dict()
             out["job"]["running"] = self.busy()
@@ -321,6 +328,135 @@ class App:
             self.need_idle()
             return quarantine.purge(cat, body.get("batch", ""))
 
+    # --- synchronization ---
+    def pair(self):
+        """(main, backup) catalogs of the two open drives."""
+        cat = self.need_cat()
+        if self.partner is None:
+            raise ApiError("Open the second drive first.", 409)
+        return sync.roles(cat, self.partner)
+
+    def _open_partner(self, root):
+        cat = self.need_cat()
+        info = catmod.read_volume_info(root)
+        if info is None:
+            raise ApiError("This drive has no catalog yet - initialize it.", 409)
+        if info["volume_id"] == cat.info["volume_id"]:
+            raise ApiError("This is the drive that is already open.")
+        with self.lock:
+            self.need_idle()
+            if self.partner is not None:
+                self.partner.close()
+            self.partner = catmod.Catalog(root)
+
+    def api_partner_open(self, body):
+        root = body.get("root")
+        if not root or not os.path.isdir(root):
+            raise ApiError("The given path does not exist.")
+        self._open_partner(root)
+        return self.api_sync_status({})
+
+    def api_partner_init(self, body):
+        root = body.get("root")
+        name = (body.get("name") or "").strip()
+        role = body.get("role") or "backup"
+        if not root or not os.path.isdir(root):
+            raise ApiError("The given path does not exist.")
+        if not name:
+            raise ApiError("Enter a drive name.")
+        if role not in ("main", "backup", "other"):
+            raise ApiError("Unknown role.")
+        if catmod.read_volume_info(root) is None:
+            try:
+                catmod.init_volume(root, name, role)
+            except OSError as e:
+                raise ApiError(f"Could not create the catalog on the drive: {e}") from e
+        self._open_partner(root)
+        return self.api_sync_status({})
+
+    def api_partner_close(self, body):
+        with self.lock:
+            self.need_idle()
+            if self.partner is not None:
+                self.partner.close()
+            self.partner = None
+        return {"ok": True}
+
+    def api_sync_status(self, q):
+        cat = self.need_cat()
+        out = {"partner": None, "plan": None, "main": None, "backup": None, "same_role": False}
+        if self.partner is None:
+            return out
+        main, backup = sync.roles(cat, self.partner)
+        out["partner"] = {"volume": self.partner.info, "root": self.partner.root, "summary": self.partner.summary()}
+        out["main"] = {"name": main.info["name"], "root": main.root, "role": main.info.get("role")}
+        out["backup"] = {"name": backup.info["name"], "root": backup.root, "role": backup.info.get("role")}
+        out["same_role"] = cat.info.get("role") == self.partner.info.get("role")
+        plan = sync.plan_summary(main, backup)
+        if (
+            plan
+            and plan["main"]["volume_id"] == main.info["volume_id"]
+            and plan["backup"]["volume_id"] == backup.info["volume_id"]
+        ):
+            out["plan"] = plan
+        out["history"] = sync.history(main, backup) is not None
+        out["last_sync"] = (main.partner() or {}).get("synced_at") if out["history"] else None
+        return out
+
+    def _start_job(self, job, target):
+        with self.lock:
+            self.need_idle()
+            self.job = job
+
+            def run():
+                try:
+                    target()
+                finally:
+                    self.cache.invalidate_and_rebuild(self.cat)
+
+            self.thread = threading.Thread(target=run, daemon=True)
+            self.thread.start()
+
+    def api_sync_compare(self, body):
+        main, backup = self.pair()
+        job = sync.SyncJob("compare", main.info["name"], backup.info["name"])
+        self._start_job(job, lambda: sync.run_compare(main, backup, job))
+        return self.api_status({})
+
+    def api_sync_plan(self, q):
+        main, _ = self.pair()
+        return sync.plan_items(
+            main,
+            q.get("kind") or None,
+            int(q.get("offset", 0)),
+            min(int(q.get("limit", 200)), 1000),
+            failed=q.get("failed") == "1",
+        )
+
+    def api_sync_choose(self, body):
+        main, _ = self.pair()
+        self.need_idle()
+        try:
+            n = sync.set_choice(main, body.get("choice"), ids=body.get("ids"), kind=body.get("kind"))
+        except sync.SyncError as e:
+            raise ApiError(str(e)) from e
+        return {"changed": n}
+
+    def api_sync_run(self, body):
+        main, backup = self.pair()
+        st = self.api_sync_status({})
+        plan = st["plan"]
+        if not plan:
+            raise ApiError("Compare the drives first.", 409)
+        if not plan["pending"]:
+            raise ApiError("Nothing to do - the plan has no pending actions.")
+        if not plan["space_ok"] and not body.get("force"):
+            raise ApiError("Not enough free space on the target drive for the selected actions.")
+        job = sync.SyncJob("sync", main.info["name"], backup.info["name"])
+        quarantine_b = body.get("quarantine_on_backup", True)
+        self._start_job(job, lambda: sync.run_sync(main, backup, job, quarantine_b))
+        return self.api_status({})
+
     # --- problems ---
     def api_issues(self, q):
         cat = self.need_cat()
@@ -409,6 +545,8 @@ GET_ROUTES = {
     "/api/batches": "api_batches",
     "/api/batch": "api_batch",
     "/api/issues": "api_issues",
+    "/api/sync/status": "api_sync_status",
+    "/api/sync/plan": "api_sync_plan",
 }
 POST_ROUTES = {
     "/api/open": "api_open",
@@ -424,6 +562,12 @@ POST_ROUTES = {
     "/api/purge": "api_purge",
     "/api/issue/resolve": "api_issue_resolve",
     "/api/forget_missing": "api_forget_missing",
+    "/api/partner/open": "api_partner_open",
+    "/api/partner/init": "api_partner_init",
+    "/api/partner/close": "api_partner_close",
+    "/api/sync/compare": "api_sync_compare",
+    "/api/sync/choose": "api_sync_choose",
+    "/api/sync/run": "api_sync_run",
 }
 
 

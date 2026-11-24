@@ -20,7 +20,7 @@ function fmtDur(s) {
 const plural = (n, one, many = one + "s") => `${fmtNum(n)} ${n === 1 ? one : many}`;
 const files = (n) => plural(n, "file");
 const ROLE = { main: "Main", backup: "Backup", other: "Other" };
-const PHASE = { walk: "Walking folders", hash: "Computing checksums", verify: "Verifying checksums" };
+const PHASE = { walk: "Walking folders", hash: "Computing checksums", verify: "Verifying checksums", copy: "Copying", compare: "Comparing drives" };
 
 async function api(path, body) {
   const opt = body === undefined ? {} : {
@@ -87,7 +87,7 @@ function showTab(t) {
   state.tab = t;
   $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
   $$(".tab").forEach((s) => s.classList.toggle("hidden", s.id !== "tab-" + t));
-  ({ drives: loadDrives, tree: loadTree, groups: loadGroups, identical: loadIdentical,
+  ({ drives: loadDrives, tree: loadTree, groups: loadGroups, identical: loadIdentical, sync: loadSync,
      quarantine: loadBatches, issues: loadIssues, settings: loadSettings }[t] || (() => {}))();
 }
 $$("#tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
@@ -103,6 +103,8 @@ async function refreshStatus() {
       : "No drive selected";
     $$("#tabs button").forEach((b) => { if (b.dataset.tab !== "drives") b.disabled = !c; });
     const running = s.job && s.job.running;
+    if (state.wasRunning && !running) onJobFinished();
+    state.wasRunning = running;
     $("#btn-scan").disabled = !c || running;
     $("#btn-verify").disabled = !c || running || !c.files;
     $("#btn-stop").classList.toggle("hidden", !running);
@@ -128,6 +130,11 @@ async function refreshStatus() {
     setTimeout(refreshStatus, 4000);
   }
 }
+function onJobFinished() {
+  if (state.tab === "sync") loadSync();
+  if (state.tab === "issues") loadIssues();
+  if (state.tab === "quarantine") loadBatches();
+}
 function rerenderAfterAnalysis() {
   if (state.tab === "tree") loadTree();
   if (state.tab === "identical") loadIdentical();
@@ -138,12 +145,18 @@ function renderJob(j) {
   if (!j) { box.classList.add("hidden"); return; }
   box.classList.remove("hidden");
   let pct = 0, nums = "";
-  if (j.phase === "hash" || j.phase === "verify") {
+  if (j.phase === "hash" || j.phase === "verify" || j.phase === "copy") {
     pct = j.to_hash_bytes ? (100 * j.bytes_hashed) / j.to_hash_bytes : 100;
     const left = j.rate > 0 ? (j.to_hash_bytes - j.bytes_hashed) / j.rate : NaN;
     nums = `${fmtNum(j.files_hashed)}/${files(j.to_hash_files)} · ${fmtBytes(j.bytes_hashed)}/${fmtBytes(j.to_hash_bytes)} · ${fmtBytes(j.rate)}/s · ~${fmtDur(left)} left`;
   } else if (j.phase === "walk") {
     pct = 3; nums = `${files(j.files_seen)} · ${fmtBytes(j.bytes_seen)}`;
+  } else if (j.phase === "compare") {
+    pct = 50; nums = "";
+  } else if (j.summary) {
+    pct = 100; nums = j.summary;
+  } else if (j.mode === "compare" || j.mode === "sync") {
+    pct = 100; nums = `${j.mode === "sync" ? "Sync" : "Compare"} ${j.status}`;
   } else {
     pct = 100;
     const st = { done: "finished", stopped: "stopped", failed: "failed" }[j.status] || j.status;
@@ -151,7 +164,7 @@ function renderJob(j) {
       (j.mode === "verify" ? `, corrupted: ${fmtNum(j.corrupt)}` : "");
   }
   const text = nums + (j.message ? " · " + j.message : "");
-  $("#job-phase").textContent = j.running ? PHASE[j.phase] || j.phase : "";
+  $("#job-phase").textContent = j.running ? j.label || PHASE[j.phase] || j.phase : "";
   $("#job-numbers").textContent = text;
   box.title = text;
   $("#job-bar").style.width = Math.min(100, pct).toFixed(1) + "%";
@@ -166,6 +179,8 @@ $("#btn-verify").onclick = handle(async () => {
 });
 $("#btn-stop").onclick = handle(async () => { await api("/api/stop", {}); toast("Stopping… the work done so far is saved."); });
 function refreshNow() {
+  // called right after a job was started, so a fast job still triggers onJobFinished()
+  state.wasRunning = true;
   clearTimeout(refreshNow._t);
   refreshNow._t = setTimeout(() => api("/api/status").then((s) => {
     state.status = s; renderJob(s.job);
@@ -174,6 +189,7 @@ function refreshNow() {
     $("#btn-stop").classList.toggle("hidden", !running);
     if (state.tab === "drives") renderSummary();
     if (running) refreshNow();
+    else if (state.wasRunning) { state.wasRunning = false; onJobFinished(); }
   }), 700);
 }
 
@@ -452,6 +468,152 @@ $("#sel-quarantine").onclick = handle(async () => {
   modal("Move to quarantine", html, btns);
 });
 
+// ---------- sync ----------
+const CHOICE = { a2b: "Copy main → backup", b2a: "Copy backup → main", move_b: "Rename on backup",
+  delete_b: "Remove from backup", skip: "Skip" };
+const syncState = { data: null, kind: null, failed: false, offset: 0 };
+async function loadSync() {
+  let d;
+  try { d = await api("/api/sync/status"); } catch (e) { $("#sync-pair").innerHTML = `<p class="notice red">${esc(e.message)}</p>`; return; }
+  syncState.data = d;
+  const c = state.status.catalog;
+  const pair = $("#sync-pair");
+  if (!d.partner) {
+    $("#sync-plan").classList.add("hidden");
+    pair.innerHTML = `<p>Open drive: <b>${esc(c.volume.name)}</b> (${esc(ROLE[c.volume.role])}). Connect the other drive and pick it here:</p>
+      <div id="partner-list" class="cards"><p class="muted">Detecting drives…</p></div>
+      <details class="manual"><summary>Enter a path manually</summary>
+        <div class="row"><input id="partner-path" placeholder="e.g. F:\\ or /mnt/backup">
+          <button id="btn-partner-open">Open</button><button id="btn-partner-init">Initialize as backup</button></div></details>`;
+    $("#btn-partner-open").onclick = handle(async () => { await api("/api/partner/open", { root: $("#partner-path").value.trim() }); loadSync(); });
+    $("#btn-partner-init").onclick = handle(async () => {
+      const root = $("#partner-path").value.trim();
+      if (!root) return toast("Enter a path.");
+      await api("/api/partner/init", { root, name: root.replace(/[\\/:]+$/, "").split(/[\\/]/).pop() || "Backup", role: "backup" });
+      loadSync();
+    });
+    const { drives } = await api("/api/drives");
+    const list = $("#partner-list"); list.innerHTML = "";
+    const others = drives.filter((x) => !x.error && x.mounted && x.path !== c.root && !(x.known && x.catalog.volume_id === c.volume.volume_id));
+    if (!others.length) list.innerHTML = `<p class="muted">No other drive found. Connect it and click Refresh on the Drives tab.</p>`;
+    for (const x of others) {
+      const card = document.createElement("div"); card.className = "card";
+      card.innerHTML = `<h3>${esc(x.known ? x.catalog.name : x.label || x.path)} ${x.known ? `<span class="tag blue">${esc(ROLE[x.catalog.role] || "")}</span>` : ""}
+        ${x.system ? `<span class="tag">system</span>` : ""}</h3>
+        <div class="meta">${esc(x.path)} · ${esc(x.fs)} · ${fmtBytes(x.total)}</div><div class="box"></div>`;
+      const box = card.querySelector(".box");
+      if (x.known) {
+        const b = document.createElement("button"); b.className = "primary"; b.textContent = "Use as the second drive";
+        b.onclick = handle(async () => { await api("/api/partner/open", { root: x.path }); loadSync(); });
+        box.appendChild(b);
+      } else {
+        const f = document.createElement("form");
+        f.innerHTML = `<input name="name" placeholder="Drive name, e.g. Data-B" value="${esc(x.label || "")}" required>
+          <select name="role"><option value="backup">Backup</option><option value="main">Main</option></select>
+          <button class="primary">Initialize and use</button>`;
+        f.onsubmit = handle(async (e) => { e.preventDefault(); await api("/api/partner/init", { root: x.path, name: f.name.value, role: f.role.value }); loadSync(); });
+        box.appendChild(f);
+      }
+      list.appendChild(card);
+    }
+    return;
+  }
+  const p = d.partner.summary;
+  pair.innerHTML = `<div class="pair">
+      <div class="card"><h3>${esc(d.main.name)} <span class="tag blue">${esc(ROLE[d.main.role] || "")}</span></h3><div class="meta">${esc(d.main.root)} · source</div></div>
+      <div class="arrow">→</div>
+      <div class="card"><h3>${esc(d.backup.name)} <span class="tag blue">${esc(ROLE[d.backup.role] || "")}</span></h3><div class="meta">${esc(d.backup.root)} · target</div></div>
+    </div>
+    ${d.same_role ? `<div class="notice amber">Both drives have the same role. The drive opened first is used as the source. Set the roles in Settings to be sure of the direction.</div>` : ""}
+    <p class="muted">${d.history ? `Last sync: ${fmtDate(d.last_sync)}` : "These drives have not been synchronized yet."}
+      ${!p.last_full_scan ? " The second drive has not been scanned yet - Compare will scan it first (for 1 TB over USB this takes hours)." : ""}</p>
+    <div class="row"><button id="btn-sync-compare" class="primary">Compare</button><button id="btn-partner-close">Disconnect second drive</button></div>`;
+  $("#btn-sync-compare").onclick = handle(async () => { await api("/api/sync/compare", {}); refreshNow(); toast("Scanning both drives, then comparing…"); });
+  $("#btn-partner-close").onclick = handle(async () => { await api("/api/partner/close", {}); loadSync(); });
+  renderPlan();
+}
+function renderPlan() {
+  const d = syncState.data; const plan = d && d.plan;
+  $("#sync-plan").classList.toggle("hidden", !plan);
+  if (!plan) return;
+  $("#sync-plan-info").textContent = `compared ${fmtDate(plan.created_at)}` + (plan.executed_at ? ` · last run ${fmtDate(plan.executed_at)}` : "");
+  $("#sync-warnings").innerHTML = plan.warnings.map((w) => `<div class="notice amber">${esc(w)}</div>`).join("");
+  if (!plan.kinds.length) {
+    $("#sync-kinds").innerHTML = `<tr><td colspan="5"><span class="tag green">The drives are in sync</span></td></tr>`;
+  } else {
+    $("#sync-kinds").innerHTML = plan.kinds.map((k) => `<tr>
+      <td>${esc(k.label)}${k.done ? ` <span class="tag green">${fmtNum(k.done)} done</span>` : ""}</td>
+      <td class="num">${fmtNum(k.count)}</td><td class="num">${fmtBytes(k.bytes)}</td>
+      <td><select data-kindchoice="${k.kind}"><option value="">${k.choices.length === 1 ? CHOICE[k.choices[0]] : "Mixed (per file)"}</option>
+        ${optionsFor(k.kind).map((o) => `<option value="${o}">${CHOICE[o]} (all)</option>`).join("")}</select></td>
+      <td><button class="small" data-kindshow="${k.kind}">Show</button></td></tr>`).join("") +
+      (plan.failed ? `<tr><td colspan="4"><span class="tag red">${files(plan.failed)} failed in the last run</span></td>
+        <td><button class="small" data-kindshow="__failed">Show</button></td></tr>` : "");
+  }
+  const space = [];
+  if (plan.bytes_to_backup) space.push(`To backup: ${fmtBytes(plan.bytes_to_backup)} (free ${fmtBytes(plan.free_backup)})`);
+  if (plan.bytes_to_main) space.push(`To main: ${fmtBytes(plan.bytes_to_main)} (free ${fmtBytes(plan.free_main)})`);
+  $("#sync-space").innerHTML = space.map((x) => `<span class="tag">${esc(x)}</span>`).join(" ") +
+    (plan.space_ok ? "" : ` <span class="tag red">not enough free space</span>`);
+  const btn = $("#btn-sync-run");
+  btn.textContent = plan.pending ? `Run sync (${plural(plan.pending, "action")})` : "Nothing to do";
+  btn.disabled = !plan.pending || (state.status.job && state.status.job.running);
+  if (syncState.kind) loadPlanItems();
+}
+const KIND_OPTIONS = {
+  copy_to_b: ["a2b", "skip"], update_b: ["a2b", "skip"], move_on_b: ["move_b", "skip"], delete_on_b: ["delete_b", "skip"],
+  repair_b: ["a2b", "skip"], repair_a: ["b2a", "skip"], restore_to_a: ["b2a", "delete_b", "skip"],
+  only_on_b: ["b2a", "delete_b", "skip"], conflict: ["a2b", "b2a", "skip"], differs: ["a2b", "b2a", "skip"],
+  unrecoverable: ["skip"], unreadable: ["skip"],
+};
+const optionsFor = (k) => KIND_OPTIONS[k] || ["skip"];
+async function loadPlanItems() {
+  const q = new URLSearchParams({ offset: syncState.offset, limit: 200 });
+  if (syncState.kind === "__failed") q.set("failed", "1"); else q.set("kind", syncState.kind);
+  const r = await api("/api/sync/plan?" + q).catch((e) => { toast(e.message); return null; });
+  if (!r) return;
+  const title = syncState.kind === "__failed" ? "Failed in the last run" : (syncState.data.plan.kinds.find((k) => k.kind === syncState.kind) || {}).label;
+  $("#sync-items").innerHTML = `<div class="items-head"><h2>${esc(title || "")}</h2><span class="muted">${plural(r.total, "item")}</span>
+      <div class="spacer"></div>
+      ${syncState.offset > 0 ? `<button class="small" id="items-prev">← Previous</button>` : ""}
+      ${syncState.offset + r.items.length < r.total ? `<button class="small" id="items-next">Next →</button>` : ""}</div>
+    <table class="list"><thead><tr><th>Path</th><th class="num">Size</th><th>Details</th><th>Action</th></tr></thead><tbody>` +
+    r.items.map((i) => `<tr><td class="path">${esc(i.path)}${i.src_path ? `<br><span class="muted">from ${esc(i.src_path)}</span>` : ""}</td>
+      <td class="num">${fmtBytes(i.size)}</td>
+      <td class="reason">${esc(i.reason || "")}${i.done ? ` <span class="tag green">done</span>` : i.result ? ` <span class="tag red">${esc(i.result)}</span>` : ""}</td>
+      <td>${i.done ? "" : `<select data-itemchoice="${i.id}">${i.options.map((o) => `<option value="${o}" ${o === i.choice ? "selected" : ""}>${CHOICE[o]}</option>`).join("")}</select>`}</td></tr>`).join("") +
+    "</tbody></table>";
+  const prev = $("#items-prev"), next = $("#items-next");
+  if (prev) prev.onclick = () => { syncState.offset = Math.max(0, syncState.offset - 200); loadPlanItems(); };
+  if (next) next.onclick = () => { syncState.offset += 200; loadPlanItems(); };
+}
+$("#sync-kinds").addEventListener("click", (e) => {
+  const k = e.target.dataset.kindshow; if (!k) return;
+  syncState.kind = k; syncState.offset = 0; loadPlanItems();
+});
+$("#sync-kinds").addEventListener("change", handle(async (e) => {
+  const k = e.target.dataset.kindchoice; if (!k || !e.target.value) return;
+  await api("/api/sync/choose", { kind: k, choice: e.target.value });
+  await loadSync();
+}));
+$("#sync-items").addEventListener("change", handle(async (e) => {
+  const id = e.target.dataset.itemchoice; if (!id) return;
+  await api("/api/sync/choose", { ids: [+id], choice: e.target.value });
+  const d = await api("/api/sync/status"); syncState.data = d;
+  const kindsScroll = window.scrollY; renderPlan(); window.scrollTo(0, kindsScroll);
+}));
+$("#btn-sync-compare2").onclick = handle(async () => { await api("/api/sync/compare", {}); refreshNow(); toast("Scanning both drives, then comparing…"); });
+$("#btn-sync-run").onclick = () => {
+  const plan = syncState.data.plan;
+  const q = $("#sync-quarantine").checked;
+  modal("Run synchronization", `<p><b>${esc(plan.main.name)}</b> → <b>${esc(plan.backup.name)}</b>: ${plural(plan.pending, "action")}.</p>
+    <ul>${plan.kinds.filter((k) => k.active - k.done > 0).map((k) => `<li>${esc(k.label)}: ${fmtNum(k.active - k.done)}</li>`).join("")}</ul>
+    <p class="muted">Every copied file is verified with its checksum. ${q ? "Files removed or replaced on a drive go to its quarantine." : "<b>Files removed from the backup will be deleted permanently.</b>"}</p>`,
+    [{ label: "Cancel" }, { label: "Run", cls: "primary", onClick: handle(async () => {
+      await api("/api/sync/run", { quarantine_on_backup: q }); refreshNow();
+    }) }]);
+};
+
 // ---------- quarantine ----------
 async function loadBatches() {
   const { batches } = await api("/api/batches").catch(() => ({ batches: [] }));
@@ -469,10 +631,11 @@ $("#batch-body").addEventListener("click", handle(async (e) => {
   const t = e.target;
   if (t.dataset.bshow) {
     const r = await api("/api/batch?id=" + encodeURIComponent(t.dataset.bshow));
-    modal(`Batch ${t.dataset.bshow}`, "<ul>" + r.files.map((f) => `<li>${esc(f.path)} <span class="muted">· ${fmtBytes(f.size)}</span></li>`).join("") + "</ul>", [{ label: "Close" }]);
+    modal(`Batch ${t.dataset.bshow}`, "<ul>" + r.files.map((f) => `<li>${esc(f.path)} <span class="muted">· ${fmtBytes(f.size)}${f.kind === "replaced" ? " · older version (restore by hand from the quarantine folder)" : ""}</span></li>`).join("") + "</ul>", [{ label: "Close" }]);
   } else if (t.dataset.brestore) {
     const r = await api("/api/restore", { batch: t.dataset.brestore });
-    toast(`Restored: ${files(r.restored)}.` + (r.problems.length ? ` Problems: ${r.problems.length}` : ""));
+    toast(`Restored: ${files(r.restored)}.` + (r.problems.length ? ` Problems: ${r.problems.length}.` : "") +
+      (r.left_in_quarantine ? ` ${files(r.left_in_quarantine)} (older versions) stay in the quarantine folder.` : ""));
     loadBatches();
   } else if (t.dataset.bpurge) {
     const id = t.dataset.bpurge;

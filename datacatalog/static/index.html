@@ -29,6 +29,7 @@
   <button data-tab="tree" disabled>Duplicate tree</button>
   <button data-tab="groups" disabled>Duplicate groups</button>
   <button data-tab="identical" disabled>Identical folders</button>
+  <button data-tab="sync" disabled>Sync</button>
   <button data-tab="quarantine" disabled>Quarantine</button>
   <button data-tab="issues" disabled>Problems <span id="issues-badge" class="badge red hidden"></span></button>
   <button data-tab="settings" disabled>Settings</button>
@@ -104,6 +105,33 @@
       <button id="ident-keep-first">Keep the first folder in each group, select the rest</button>
     </div>
     <div id="ident-list"></div>
+  </section>
+
+  <!-- SYNC -->
+  <section id="tab-sync" class="tab hidden">
+    <div class="toolbar"><h2>Synchronize with the backup drive</h2></div>
+    <p class="hint">One-way mirror from the <b>main</b> drive to the <b>backup</b> drive. Nothing changes until you review the plan and click Run.
+      Files removed or replaced on a drive go to that drive's quarantine.</p>
+    <div id="sync-pair"></div>
+    <div id="sync-plan" class="hidden">
+      <div class="toolbar">
+        <h2>Plan</h2><span id="sync-plan-info" class="muted"></span>
+        <div class="spacer"></div>
+        <button id="btn-sync-compare2">Compare again</button>
+      </div>
+      <div id="sync-warnings"></div>
+      <table class="list">
+        <thead><tr><th>Difference</th><th class="num">Files</th><th class="num">Size</th><th>Action</th><th></th></tr></thead>
+        <tbody id="sync-kinds"></tbody>
+      </table>
+      <div id="sync-space" class="row"></div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="sync-quarantine" checked> Move files removed on the backup to its quarantine (recommended)</label>
+        <div class="spacer"></div>
+        <button id="btn-sync-run" class="primary">Run sync</button>
+      </div>
+      <div id="sync-items"></div>
+    </div>
   </section>
 
   <!-- QUARANTINE -->

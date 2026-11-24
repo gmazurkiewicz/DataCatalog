@@ -206,13 +206,22 @@ def list_batches(cat):
 
 
 def batch_files(cat, batch, limit=1000):
-    return [
-        dict(r)
+    """Files of a batch: restorable ones plus replaced older versions (restore those by hand)."""
+    out = [
+        dict(r, kind="removed")
         for r in cat.q(
             "SELECT path,size,hash FROM files WHERE status='quarantined' AND q_batch=? ORDER BY path LIMIT ?",
             (batch, limit),
         )
     ]
+    out += [
+        dict(r, kind="replaced")
+        for r in cat.q(
+            "SELECT path,size,hash FROM journal WHERE op='replaced' AND batch=? ORDER BY path LIMIT ?",
+            (batch, limit),
+        )
+    ]
+    return out
 
 
 def restore(cat, batch):
@@ -240,13 +249,25 @@ def restore(cat, batch):
                 "INSERT INTO journal(ts,host,op,batch,path,hash,size) VALUES(?,?,?,?,?,?,?)",
                 (time.time(), host, "restore", batch, r["path"], r["hash"], r["size"]),
             )
+    # Replaced versions (not tracked as catalog rows) stay where they are.
+    remaining = _prune_empty_dirs(base)
     with cat.lock:
-        if not problems:
+        if not problems and not remaining:
             cat.conn.execute("UPDATE q_batches SET status='restored' WHERE id=?", (batch,))
         cat.conn.commit()
-    if not problems:
-        shutil.rmtree(base, ignore_errors=True)
-    return {"restored": restored, "problems": problems}
+    return {"restored": restored, "problems": problems, "left_in_quarantine": remaining}
+
+
+def _prune_empty_dirs(base):
+    """Remove empty directories under base (bottom-up); return the number of files left."""
+    left = 0
+    for dirpath, _dirs, files in os.walk(base, topdown=False):
+        left += len(files)
+        try:
+            os.rmdir(dirpath)
+        except OSError:
+            pass
+    return left
 
 
 def purge(cat, batch):
@@ -306,6 +327,7 @@ def repair_from_copy(cat, issue):
         os.remove(tmp)
         raise ValueError("The copy failed verification after copying.")
     os.rename(dst, qdst)  # corrupted version goes to quarantine
+    damaged_size = os.stat(qdst).st_size
     os.rename(tmp, dst)
     st = os.stat(dst)
     now = time.time()
@@ -315,6 +337,23 @@ def repair_from_copy(cat, issue):
             (issue["expected"], st.st_size, st.st_mtime_ns, now, now, issue["path"]),
         )
         cat.conn.execute("UPDATE integrity_issues SET resolved=1 WHERE id=?", (issue["id"],))
+        cat.conn.execute(
+            "INSERT INTO q_batches(id,created_at,files,bytes,note,status) VALUES(?,?,?,?,?,'active')",
+            (batch, now, 1, damaged_size, "corrupted version replaced by repair"),
+        )
+        cat.conn.execute(
+            "INSERT INTO journal(ts,host,op,batch,path,hash,size,detail) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                now,
+                catmod.hostname(),
+                "replaced",
+                batch,
+                issue["path"],
+                issue["actual"],
+                damaged_size,
+                "corrupted version replaced by repair",
+            ),
+        )
         cat.conn.execute(
             "INSERT INTO journal(ts,host,op,batch,path,hash,size,detail) VALUES(?,?,?,?,?,?,?,?)",
             (
