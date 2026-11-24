@@ -2,6 +2,7 @@
 
 All paths stored in the catalog are relative to the drive root and use '/'.
 """
+
 import os
 import sys
 
@@ -45,7 +46,7 @@ def parent_of(rel):
 
 
 def name_of(rel):
-    return rel[rel.rfind("/") + 1:]
+    return rel[rel.rfind("/") + 1 :]
 
 
 def join(a, b):

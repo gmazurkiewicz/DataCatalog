@@ -1,4 +1,5 @@
 """Catalog database stored on the drive itself in .datacatalog/catalog.db."""
+
 import json
 import os
 import sqlite3
@@ -96,6 +97,7 @@ SCHEMA_VERSION = "1"
 def hostname():
     try:
         import socket
+
         return socket.gethostname()
     except Exception:
         return "?"
@@ -112,7 +114,7 @@ def volume_file(root):
 def read_volume_info(root):
     """Return drive info from .datacatalog/volume.json, or None."""
     try:
-        with open(volume_file(root), "r", encoding="utf-8") as f:
+        with open(volume_file(root), encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -201,9 +203,7 @@ class Catalog:
         last_verify = self.q1("SELECT * FROM scans WHERE status='done' AND mode='verify' ORDER BY id DESC LIMIT 1")
         issues = self.q1("SELECT COUNT(*) FROM integrity_issues WHERE resolved=0")[0]
         missing = self.q1("SELECT COUNT(*) FROM files WHERE status='missing'")[0]
-        quarantined = self.q1(
-            "SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='quarantined'"
-        )
+        quarantined = self.q1("SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='quarantined'")
         return {
             "volume": self.info,
             "root": self.root,

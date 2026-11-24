@@ -1,51 +1,10 @@
 #!/usr/bin/env python3
-"""Start: python run.py   (then open http://127.0.0.1:8765)
+"""Run without installing anything: python run.py [options]
 
-Options:
-  --host 0.0.0.0        allow access from other computers on the network
-                        (e.g. when running on a Raspberry Pi); requires --password
-  --port 8765           server port
-  --password SECRET     password (user name: admin)
-  --open PATH           open a drive right away, e.g. E:\\ or /mnt/drive
-  --no-browser          do not open a browser
+Same as `uv run datacatalog` / `python -m datacatalog`. See `python run.py --help`.
 """
-import argparse
-import sys
-import threading
-import webbrowser
 
-if sys.version_info < (3, 10):
-    sys.exit("Python 3.10 or newer is required.")
-
-from dc.server import serve
-
-
-def main():
-    ap = argparse.ArgumentParser(description="DataCatalog - organize data on external drives")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--password")
-    ap.add_argument("--open", dest="open_root")
-    ap.add_argument("--no-browser", action="store_true")
-    a = ap.parse_args()
-    if a.host not in ("127.0.0.1", "localhost", "::1") and not a.password:
-        sys.exit("Network access requires a password: add --password YOUR_PASSWORD")
-    app, httpd = serve(a.host, a.port, a.password, a.open_root)
-    url = f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '::') else a.host}:{a.port}/"
-    print(f"DataCatalog is running: {url}  (Ctrl+C to quit)")
-    if not a.no_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopping...")
-        if app.job:
-            app.job.cancel.set()
-        if app.thread:
-            app.thread.join(timeout=10)
-    finally:
-        httpd.server_close()
-
+from datacatalog.cli import main
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,5 @@
 """Detect connected drives on Windows and Linux (standard library only)."""
+
 import json
 import os
 import shutil
@@ -7,10 +8,33 @@ import subprocess
 from . import catalog, paths
 
 LINUX_SKIP_FS = {
-    "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2", "pstore",
-    "securityfs", "debugfs", "tracefs", "configfs", "fusectl", "mqueue", "hugetlbfs",
-    "bpf", "autofs", "overlay", "squashfs", "ramfs", "binfmt_misc", "efivarfs",
-    "rpc_pipefs", "nsfs", "selinuxfs", "fuse.portal", "fuse.gvfsd-fuse",
+    "proc",
+    "sysfs",
+    "devtmpfs",
+    "devpts",
+    "tmpfs",
+    "cgroup",
+    "cgroup2",
+    "pstore",
+    "securityfs",
+    "debugfs",
+    "tracefs",
+    "configfs",
+    "fusectl",
+    "mqueue",
+    "hugetlbfs",
+    "bpf",
+    "autofs",
+    "overlay",
+    "squashfs",
+    "ramfs",
+    "binfmt_misc",
+    "efivarfs",
+    "rpc_pipefs",
+    "nsfs",
+    "selinuxfs",
+    "fuse.portal",
+    "fuse.gvfsd-fuse",
 }
 LINUX_SKIP_MOUNTS = ("/proc", "/sys", "/dev", "/run/user", "/snap", "/boot", "/var/lib/docker")
 
@@ -51,23 +75,33 @@ def list_windows():
         maxlen = wintypes.DWORD()
         flags = wintypes.DWORD()
         ok = k32.GetVolumeInformationW(
-            ctypes.c_wchar_p(root), label, 261, ctypes.byref(serial),
-            ctypes.byref(maxlen), ctypes.byref(flags), fs, 261,
+            ctypes.c_wchar_p(root),
+            label,
+            261,
+            ctypes.byref(serial),
+            ctypes.byref(maxlen),
+            ctypes.byref(flags),
+            fs,
+            261,
         )
         if not ok:
             continue
         total, free = _usage(root)
-        out.append(_with_catalog({
-            "path": root,
-            "label": label.value,
-            "fs": fs.value,
-            "serial": f"{serial.value:08X}",
-            "type": types.get(dtype, "?"),
-            "total": total,
-            "free": free,
-            "mounted": True,
-            "system": os.environ.get("SystemDrive", "C:").upper() + "\\" == root.upper(),
-        }))
+        out.append(
+            _with_catalog(
+                {
+                    "path": root,
+                    "label": label.value,
+                    "fs": fs.value,
+                    "serial": f"{serial.value:08X}",
+                    "type": types.get(dtype, "?"),
+                    "total": total,
+                    "free": free,
+                    "mounted": True,
+                    "system": os.environ.get("SystemDrive", "C:").upper() + "\\" == root.upper(),
+                }
+            )
+        )
     return out
 
 
@@ -75,7 +109,9 @@ def _lsblk():
     try:
         r = subprocess.run(
             ["lsblk", "-J", "-b", "-o", "NAME,PATH,FSTYPE,SIZE,MOUNTPOINT,LABEL,UUID,TYPE,TRAN,MODEL"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if r.returncode != 0:
             return None
@@ -90,17 +126,19 @@ def list_linux():
     by_dev = {}
     tree = _lsblk()
     if tree:
+
         def walk(nodes, parent=None):
             for n in nodes:
                 n["_parent"] = parent
                 if n.get("path"):
                     by_dev[n["path"]] = n
                 walk(n.get("children") or [], n)
+
         walk(tree)
 
     try:
-        with open("/proc/self/mounts", "r", encoding="utf-8") as f:
-            mounts = [l.split() for l in f]
+        with open("/proc/self/mounts", encoding="utf-8") as f:
+            mounts = [line.split() for line in f]
     except OSError:
         mounts = []
     for m in mounts:
@@ -115,19 +153,23 @@ def list_linux():
         total, free = _usage(mp)
         n = by_dev.get(dev, {})
         p = n.get("_parent") or {}
-        out.append(_with_catalog({
-            "path": mp,
-            "device": dev,
-            "label": n.get("label") or "",
-            "fs": n.get("fstype") or fs,
-            "serial": n.get("uuid") or "",
-            "type": "USB" if (p.get("tran") or n.get("tran")) == "usb" else "local",
-            "model": (p.get("model") or "").strip(),
-            "total": total,
-            "free": free,
-            "mounted": True,
-            "system": mp == "/",
-        }))
+        out.append(
+            _with_catalog(
+                {
+                    "path": mp,
+                    "device": dev,
+                    "label": n.get("label") or "",
+                    "fs": n.get("fstype") or fs,
+                    "serial": n.get("uuid") or "",
+                    "type": "USB" if (p.get("tran") or n.get("tran")) == "usb" else "local",
+                    "model": (p.get("model") or "").strip(),
+                    "total": total,
+                    "free": free,
+                    "mounted": True,
+                    "system": mp == "/",
+                }
+            )
+        )
     # Partitions that are visible but not mounted - shown with a hint.
     for dev, n in by_dev.items():
         if n.get("mountpoint") or n.get("type") != "part" or not n.get("fstype"):
@@ -140,22 +182,24 @@ def list_linux():
             else f"sudo mkdir -p /mnt/drive && sudo mount {dev} /mnt/drive"
         )
         p = n.get("_parent") or {}
-        out.append({
-            "path": None,
-            "device": dev,
-            "label": n.get("label") or "",
-            "fs": n["fstype"],
-            "serial": n.get("uuid") or "",
-            "type": "USB" if p.get("tran") == "usb" else "local",
-            "model": (p.get("model") or "").strip(),
-            "total": int(n["size"]) if n.get("size") else None,
-            "free": None,
-            "mounted": False,
-            "mount_hint": hint,
-            "known": False,
-            "catalog": None,
-            "system": False,
-        })
+        out.append(
+            {
+                "path": None,
+                "device": dev,
+                "label": n.get("label") or "",
+                "fs": n["fstype"],
+                "serial": n.get("uuid") or "",
+                "type": "USB" if p.get("tran") == "usb" else "local",
+                "model": (p.get("model") or "").strip(),
+                "total": int(n["size"]) if n.get("size") else None,
+                "free": None,
+                "mounted": False,
+                "mount_hint": hint,
+                "known": False,
+                "catalog": None,
+                "system": False,
+            }
+        )
     return out
 
 

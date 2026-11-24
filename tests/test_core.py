@@ -5,8 +5,8 @@ import urllib.request
 
 import pytest
 
-from dc import analysis, catalog, quarantine, scanner
-from dc.server import serve
+from datacatalog import analysis, catalog, quarantine, scanner
+from datacatalog.server import serve
 
 
 def write(root, rel, data):
@@ -66,7 +66,7 @@ def test_analysis(disk):
     assert a.groups_total == 4
     assert a.dirs["Old/Photos"].to_dict()["fully_redundant"]
     assert not a.dirs["Old"].to_dict()["fully_redundant"]  # unique.txt
-    assert not a.dirs["Docs"].to_dict()["fully_redundant"]    # copies only inside
+    assert not a.dirs["Docs"].to_dict()["fully_redundant"]  # copies only inside
     assert a.dirs["Docs"].dup_files == 2
     ident = {tuple(g["dirs"]) for g in a.identical}
     # "Copy" holds only a copy of "Music" - the topmost level is shown, no nesting
@@ -175,8 +175,9 @@ def test_http_api(disk):
     base = f"http://127.0.0.1:{port}"
 
     def post(p, b):
-        r = urllib.request.Request(base + p, data=json.dumps(b).encode(),
-                                   headers={"Content-Type": "application/json", "X-DataCatalog": "1"})
+        r = urllib.request.Request(
+            base + p, data=json.dumps(b).encode(), headers={"Content-Type": "application/json", "X-DataCatalog": "1"}
+        )
         return json.load(urllib.request.urlopen(r))
 
     def get(p):
@@ -186,6 +187,7 @@ def test_http_api(disk):
         post("/api/scan", {"mode": "scan"})
         app.thread.join(10)
         import time
+
         for _ in range(50):
             if app.cache.current and not app.cache.building:
                 break

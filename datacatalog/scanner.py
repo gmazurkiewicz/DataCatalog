@@ -12,6 +12,7 @@ hashed keep their checksum in the database and the next scan finishes the rest.
 Verify mode re-reads every file and compares checksums. A file with the same
 size and modification time but a different checksum has been silently corrupted.
 """
+
 import hashlib
 import os
 import stat as stat_mod
@@ -120,9 +121,20 @@ class Scanner:
                 """UPDATE scans SET finished_at=?, status=?, files_seen=?, bytes_seen=?,
                    files_hashed=?, bytes_hashed=?, new_files=?, changed_files=?,
                    missing_files=?, errors=?, corrupt=? WHERE id=?""",
-                (j.finished_at, status, j.files_seen, j.bytes_seen, j.files_hashed,
-                 j.bytes_hashed, j.new_files, j.changed_files, j.missing_files,
-                 j.errors, j.corrupt, j.scan_id),
+                (
+                    j.finished_at,
+                    status,
+                    j.files_seen,
+                    j.bytes_seen,
+                    j.files_hashed,
+                    j.bytes_hashed,
+                    j.new_files,
+                    j.changed_files,
+                    j.missing_files,
+                    j.errors,
+                    j.corrupt,
+                    j.scan_id,
+                ),
             )
             self.cat.conn.commit()
 
@@ -148,9 +160,8 @@ class Scanner:
                 continue
             with self.cat.lock:
                 known = {
-                    r["name"]: r for r in conn.execute(
-                        "SELECT id,name,size,mtime_ns,hash,status FROM files WHERE dir=?", (rel_dir,)
-                    )
+                    r["name"]: r
+                    for r in conn.execute("SELECT id,name,size,mtime_ns,hash,status FROM files WHERE dir=?", (rel_dir,))
                 }
             rows_new, rows_seen, rows_changed = [], [], []
             for e in entries:
@@ -264,8 +275,9 @@ class Scanner:
                 continue
             j.files_hashed += 1
             now = time.time()
-            unchanged_during = same_stat(st_before.st_size, st_before.st_mtime_ns,
-                                         st_after.st_size, st_after.st_mtime_ns)
+            unchanged_during = same_stat(
+                st_before.st_size, st_before.st_mtime_ns, st_after.st_size, st_after.st_mtime_ns
+            )
             with self.cat.lock:
                 if not verify:
                     if unchanged_during:

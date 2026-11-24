@@ -12,6 +12,7 @@ A directory fingerprint (used to find identical directories) is the sum of its
 files' checksum values modulo 2^128 plus file count and size - it does not
 depend on file names or order.
 """
+
 import sqlite3
 import threading
 import time
@@ -23,8 +24,7 @@ MOD = 1 << 128
 
 
 class DirStat:
-    __slots__ = ("files", "bytes", "dup_files", "dup_bytes", "out_files", "out_bytes",
-                 "unhashed", "corrupt", "fp")
+    __slots__ = ("files", "bytes", "dup_files", "dup_bytes", "out_files", "out_bytes", "unhashed", "corrupt", "fp")
 
     def __init__(self):
         self.files = self.bytes = self.dup_files = self.dup_bytes = 0
@@ -33,9 +33,12 @@ class DirStat:
 
     def to_dict(self):
         return {
-            "files": self.files, "bytes": self.bytes,
-            "dup_files": self.dup_files, "dup_bytes": self.dup_bytes,
-            "out_files": self.out_files, "out_bytes": self.out_bytes,
+            "files": self.files,
+            "bytes": self.bytes,
+            "dup_files": self.dup_files,
+            "dup_bytes": self.dup_bytes,
+            "out_files": self.out_files,
+            "out_bytes": self.out_bytes,
             "unhashed": self.unhashed - self.corrupt,
             "corrupt": self.corrupt,
             "fully_redundant": self.files > 0 and self.unhashed == 0 and self.out_files == self.files,
@@ -44,12 +47,12 @@ class DirStat:
 
 class Analysis:
     def __init__(self):
-        self.dirs = {}            # rel_dir -> DirStat
+        self.dirs = {}  # rel_dir -> DirStat
         self.children = defaultdict(set)
-        self.hash_count = {}      # hash -> number of files (only > 1)
+        self.hash_count = {}  # hash -> number of files (only > 1)
         self.groups_total = 0
         self.wasted_bytes = 0
-        self.identical = []       # groups of identical directories
+        self.identical = []  # groups of identical directories
         self.built_at = None
         self.build_seconds = 0
 
@@ -99,7 +102,8 @@ def _build(conn):
 
     get("")
     cur = conn.execute(
-        "SELECT dir, size, CASE WHEN corrupt=1 THEN NULL ELSE hash END, corrupt FROM files WHERE status='ok'")
+        "SELECT dir, size, CASE WHEN corrupt=1 THEN NULL ELSE hash END, corrupt FROM files WHERE status='ok'"
+    )
     rows = cur.fetchmany(20000)
     while rows:
         for d, size, h, bad in rows:
@@ -174,8 +178,7 @@ def _identical(a):
         pk = {key_of.get(p) for p in parents}
         if len(pk) == 1 and None not in pk and len(set(parents)) == len(parents):
             continue
-        out.append({"dirs": sorted(ds), "files": k[1], "bytes": k[2],
-                    "wasted": k[2] * (len(ds) - 1)})
+        out.append({"dirs": sorted(ds), "files": k[1], "bytes": k[2], "wasted": k[2] * (len(ds) - 1)})
     out.sort(key=lambda g: -g["wasted"])
     return out
 

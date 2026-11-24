@@ -11,6 +11,7 @@ Safety rules:
     and modification time recorded in the catalog,
   * the file being moved must not have changed since the scan.
 """
+
 import os
 import shutil
 import time
@@ -64,16 +65,26 @@ def plan(cat, sel_paths):
         h = r["hash"]
         if h not in keepers:
             keepers[h] = next(
-                (k for k in cat.q(
-                    "SELECT id,path,size,mtime_ns FROM files WHERE status='ok' AND corrupt=0 AND hash=? ORDER BY path",
-                    (h,))
-                 if k["id"] not in selected_ids),
+                (
+                    k
+                    for k in cat.q(
+                        "SELECT id,path,size,mtime_ns FROM files WHERE status='ok' AND corrupt=0 AND hash=? ORDER BY path",
+                        (h,),
+                    )
+                    if k["id"] not in selected_ids
+                ),
                 None,
             )
         if keepers[h] is None:
             total = cat.q1("SELECT COUNT(*) FROM files WHERE status='ok' AND corrupt=0 AND hash=?", (h,))[0]
-            blocked.append((r, "the only copy on this drive" if total < 2
-                            else "all copies of this file are selected - unselect one"))
+            blocked.append(
+                (
+                    r,
+                    "the only copy on this drive"
+                    if total < 2
+                    else "all copies of this file are selected - unselect one",
+                )
+            )
         else:
             movable.append(r)
     return movable, blocked, keepers
@@ -85,12 +96,13 @@ def summarize_plan(movable, blocked, keepers, limit=200):
         "movable_bytes": sum(r["size"] for r in movable),
         "blocked_files": len(blocked),
         "blocked_bytes": sum(r["size"] for r, _ in blocked),
-        "blocked": [
-            {"path": r["path"], "size": r["size"], "reason": why} for r, why in blocked[:limit]
-        ],
+        "blocked": [{"path": r["path"], "size": r["size"], "reason": why} for r, why in blocked[:limit]],
         "examples": [
-            {"path": r["path"], "size": r["size"],
-             "kept_copy": keepers[r["hash"]]["path"] if keepers.get(r["hash"]) else None}
+            {
+                "path": r["path"],
+                "size": r["size"],
+                "kept_copy": keepers[r["hash"]]["path"] if keepers.get(r["hash"]) else None,
+            }
             for r in movable[:20]
         ],
     }
@@ -139,8 +151,7 @@ def execute(cat, sel_paths, note=""):
                 except OSError:
                     verified_keepers[k["id"]] = False
             if not verified_keepers[k["id"]]:
-                skipped.append({"path": r["path"],
-                                "reason": f"the kept copy {k['path']} is missing or has changed"})
+                skipped.append({"path": r["path"], "reason": f"the kept copy {k['path']} is missing or has changed"})
                 continue
         dst = paths.to_os(base, r["path"])
         try:
@@ -155,8 +166,16 @@ def execute(cat, sel_paths, note=""):
             cat.conn.execute("UPDATE files SET status='quarantined', q_batch=? WHERE id=?", (batch, r["id"]))
             cat.conn.execute(
                 "INSERT INTO journal(ts,host,op,batch,path,hash,size,detail) VALUES(?,?,?,?,?,?,?,?)",
-                (time.time(), host, "quarantine", batch, r["path"], r["hash"], r["size"],
-                 keepers[r["hash"]]["path"] if r["size"] > 0 and keepers.get(r["hash"]) else None),
+                (
+                    time.time(),
+                    host,
+                    "quarantine",
+                    batch,
+                    r["path"],
+                    r["hash"],
+                    r["size"],
+                    keepers[r["hash"]]["path"] if r["size"] > 0 and keepers.get(r["hash"]) else None,
+                ),
             )
     for d in sorted(touched_dirs, key=len, reverse=True):
         _remove_empty_parents(root, d)
@@ -187,10 +206,13 @@ def list_batches(cat):
 
 
 def batch_files(cat, batch, limit=1000):
-    return [dict(r) for r in cat.q(
-        "SELECT path,size,hash FROM files WHERE status='quarantined' AND q_batch=? ORDER BY path LIMIT ?",
-        (batch, limit),
-    )]
+    return [
+        dict(r)
+        for r in cat.q(
+            "SELECT path,size,hash FROM files WHERE status='quarantined' AND q_batch=? ORDER BY path LIMIT ?",
+            (batch, limit),
+        )
+    ]
 
 
 def restore(cat, batch):
@@ -270,6 +292,7 @@ def repair_from_copy(cat, issue):
     if not good:
         raise ValueError("There is no good copy of this file on this drive.")
     from .scanner import hash_file
+
     src = paths.to_os(root, good["path"])
     if hash_file(src) != issue["expected"]:
         raise ValueError(f"The copy {good['path']} has changed too - it cannot be used.")
@@ -282,7 +305,7 @@ def repair_from_copy(cat, issue):
     if hash_file(tmp) != issue["expected"]:
         os.remove(tmp)
         raise ValueError("The copy failed verification after copying.")
-    os.rename(dst, qdst)          # corrupted version goes to quarantine
+    os.rename(dst, qdst)  # corrupted version goes to quarantine
     os.rename(tmp, dst)
     st = os.stat(dst)
     now = time.time()
@@ -294,8 +317,16 @@ def repair_from_copy(cat, issue):
         cat.conn.execute("UPDATE integrity_issues SET resolved=1 WHERE id=?", (issue["id"],))
         cat.conn.execute(
             "INSERT INTO journal(ts,host,op,batch,path,hash,size,detail) VALUES(?,?,?,?,?,?,?,?)",
-            (now, catmod.hostname(), "repair", batch, issue["path"], issue["expected"], st.st_size,
-             f"from copy {good['path']}; corrupted version in quarantine"),
+            (
+                now,
+                catmod.hostname(),
+                "repair",
+                batch,
+                issue["path"],
+                issue["expected"],
+                st.st_size,
+                f"from copy {good['path']}; corrupted version in quarantine",
+            ),
         )
         cat.conn.commit()
     return {"repaired": issue["path"], "from": good["path"], "damaged_copy": f".datacatalog/quarantine/{batch}"}

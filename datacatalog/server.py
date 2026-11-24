@@ -1,4 +1,5 @@
 """Local HTTP server: JSON API + static UI (standard library only)."""
+
 import base64
 import hmac
 import json
@@ -90,7 +91,7 @@ class App:
         try:
             catmod.init_volume(root, name, role)
         except OSError as e:
-            raise ApiError(f"Could not create the catalog on the drive: {e}")
+            raise ApiError(f"Could not create the catalog on the drive: {e}") from e
         self._open(root)
         if body.get("excludes"):
             self.cat.set_meta("excludes", [e for e in body["excludes"] if e.strip()])
@@ -118,8 +119,13 @@ class App:
 
     # --- status and scanning ---
     def api_status(self, q):
-        out = {"version": __version__, "catalog": None, "job": None, "analysis": None,
-               "platform": "windows" if paths.IS_WINDOWS else "linux"}
+        out = {
+            "version": __version__,
+            "catalog": None,
+            "job": None,
+            "analysis": None,
+            "platform": "windows" if paths.IS_WINDOWS else "linux",
+        }
         if self.cat:
             out["catalog"] = self.cat.summary()
             out["catalog"]["include"] = self.cat.get_meta("include", [])
@@ -191,9 +197,18 @@ class App:
             copies = a.hash_count.get(r["hash"], 1) if r["hash"] and not r["corrupt"] else 0
             if only and copies < 2 and not r["corrupt"]:
                 continue
-            files.append({"name": r["name"], "path": r["path"], "type": "file", "size": r["size"],
-                          "mtime": r["mtime_ns"] / 1e9, "hash": r["hash"], "copies": copies,
-                          "corrupt": bool(r["corrupt"])})
+            files.append(
+                {
+                    "name": r["name"],
+                    "path": r["path"],
+                    "type": "file",
+                    "size": r["size"],
+                    "mtime": r["mtime_ns"] / 1e9,
+                    "hash": r["hash"],
+                    "copies": copies,
+                    "corrupt": bool(r["corrupt"]),
+                }
+            )
         key = {
             "waste": lambda x: -(x.get("dup_bytes", x.get("size", 0)) if x["type"] == "dir" else x["size"]),
             "size": lambda x: -(x.get("bytes") if x["type"] == "dir" else x["size"]),
@@ -201,18 +216,27 @@ class App:
         }.get(sort, lambda x: x["name"].lower())
         dirs.sort(key=key)
         files.sort(key=key)
-        return {"path": path, "stat": st.to_dict(), "dirs": dirs,
-                "files": files[:limit], "files_total": len(files),
-                "built_at": a.built_at}
+        return {
+            "path": path,
+            "stat": st.to_dict(),
+            "dirs": dirs,
+            "files": files[:limit],
+            "files_total": len(files),
+            "built_at": a.built_at,
+        }
 
     def api_copies(self, q):
         cat = self.need_cat()
         h = q.get("hash")
         if not h:
             raise ApiError("Missing hash parameter.")
-        rows = cat.q("SELECT path,size,mtime_ns FROM files WHERE status='ok' AND corrupt=0 AND hash=? ORDER BY path", (h,))
-        return {"hash": h, "copies": [{"path": r["path"], "size": r["size"], "mtime": r["mtime_ns"] / 1e9}
-                                      for r in rows]}
+        rows = cat.q(
+            "SELECT path,size,mtime_ns FROM files WHERE status='ok' AND corrupt=0 AND hash=? ORDER BY path", (h,)
+        )
+        return {
+            "hash": h,
+            "copies": [{"path": r["path"], "size": r["size"], "mtime": r["mtime_ns"] / 1e9} for r in rows],
+        }
 
     def api_groups(self, q):
         cat = self.need_cat()
@@ -233,20 +257,25 @@ class App:
             f"SELECT hash, COUNT(*) n, MAX(size) size {base} ORDER BY (COUNT(*)-1)*MAX(size) DESC, hash LIMIT ? OFFSET ?",
             args + [limit, offset],
         ):
-            files = cat.q("SELECT path,mtime_ns FROM files WHERE status='ok' AND corrupt=0 AND hash=? ORDER BY path",
-                          (r["hash"],))
-            groups.append({
-                "hash": r["hash"], "count": r["n"], "size": r["size"],
-                "wasted": (r["n"] - 1) * r["size"],
-                "files": [{"path": f["path"], "mtime": f["mtime_ns"] / 1e9} for f in files],
-            })
+            files = cat.q(
+                "SELECT path,mtime_ns FROM files WHERE status='ok' AND corrupt=0 AND hash=? ORDER BY path", (r["hash"],)
+            )
+            groups.append(
+                {
+                    "hash": r["hash"],
+                    "count": r["n"],
+                    "size": r["size"],
+                    "wasted": (r["n"] - 1) * r["size"],
+                    "files": [{"path": f["path"], "mtime": f["mtime_ns"] / 1e9} for f in files],
+                }
+            )
         return {"total": total, "offset": offset, "groups": groups}
 
     def api_identical(self, q):
         a = self.get_analysis()
         offset = int(q.get("offset", 0))
         limit = min(int(q.get("limit", 100)), 500)
-        return {"total": len(a.identical), "groups": a.identical[offset:offset + limit]}
+        return {"total": len(a.identical), "groups": a.identical[offset : offset + limit]}
 
     # --- quarantine ---
     def api_plan(self, body):
@@ -295,18 +324,27 @@ class App:
     # --- problems ---
     def api_issues(self, q):
         cat = self.need_cat()
-        issues = [dict(r) for r in cat.q(
-            "SELECT * FROM integrity_issues WHERE resolved=0 ORDER BY detected_at DESC LIMIT 1000")]
-        missing = [dict(r) for r in cat.q(
-            "SELECT path,size,hash FROM files WHERE status='missing' ORDER BY path LIMIT 1000")]
+        issues = [
+            dict(r)
+            for r in cat.q("SELECT * FROM integrity_issues WHERE resolved=0 ORDER BY detected_at DESC LIMIT 1000")
+        ]
+        missing = [
+            dict(r) for r in cat.q("SELECT path,size,hash FROM files WHERE status='missing' ORDER BY path LIMIT 1000")
+        ]
         missing_total = cat.q1("SELECT COUNT(*) FROM files WHERE status='missing'")[0]
         last = cat.q1("SELECT id FROM scans ORDER BY id DESC LIMIT 1")
-        errors = [dict(r) for r in cat.q(
-            "SELECT path,error,ts FROM scan_errors WHERE scan_id=? ORDER BY id LIMIT 1000",
-            (last[0] if last else -1,))]
+        errors = [
+            dict(r)
+            for r in cat.q(
+                "SELECT path,error,ts FROM scan_errors WHERE scan_id=? ORDER BY id LIMIT 1000",
+                (last[0] if last else -1,),
+            )
+        ]
         for i in issues:
-            copy = cat.q1("SELECT path FROM files WHERE status='ok' AND corrupt=0 AND hash=? AND path<>? LIMIT 1",
-                          (i["expected"], i["path"]))
+            copy = cat.q1(
+                "SELECT path FROM files WHERE status='ok' AND corrupt=0 AND hash=? AND path<>? LIMIT 1",
+                (i["expected"], i["path"]),
+            )
             i["good_copy"] = copy["path"] if copy else None
         return {"integrity": issues, "missing": missing, "missing_total": missing_total, "errors": errors}
 
@@ -323,15 +361,16 @@ class App:
                 try:
                     res = quarantine.repair_from_copy(cat, r)
                 except (ValueError, OSError) as e:
-                    raise ApiError(str(e))
+                    raise ApiError(str(e)) from e
             self.cache.invalidate_and_rebuild(cat)
             return res
         if action != "accept":
             raise ApiError("Unknown action.")
         with cat.lock:
             # The user accepts the current content as correct (an intentional edit).
-            cat.conn.execute("UPDATE files SET hash=?, hashed_at=?, corrupt=0 WHERE path=?",
-                             (r["actual"], time.time(), r["path"]))
+            cat.conn.execute(
+                "UPDATE files SET hash=?, hashed_at=?, corrupt=0 WHERE path=?", (r["actual"], time.time(), r["path"])
+            )
             cat.conn.execute("UPDATE integrity_issues SET resolved=1 WHERE id=?", (iid,))
             cat.conn.commit()
         self.cache.invalidate_and_rebuild(cat)
@@ -345,8 +384,15 @@ class App:
             for r in rows:
                 cat.conn.execute(
                     "INSERT INTO journal(ts,host,op,path,hash,size,detail) VALUES(?,?,?,?,?,?,?)",
-                    (time.time(), catmod.hostname(), "forget_missing", r["path"], r["hash"], r["size"],
-                     "confirmed by the user"),
+                    (
+                        time.time(),
+                        catmod.hostname(),
+                        "forget_missing",
+                        r["path"],
+                        r["hash"],
+                        r["size"],
+                        "confirmed by the user",
+                    ),
                 )
             cat.conn.execute("DELETE FROM files WHERE status='missing'")
             cat.conn.commit()
@@ -354,16 +400,30 @@ class App:
 
 
 GET_ROUTES = {
-    "/api/status": "api_status", "/api/drives": "api_drives", "/api/tree": "api_tree",
-    "/api/copies": "api_copies", "/api/groups": "api_groups", "/api/identical": "api_identical",
-    "/api/batches": "api_batches", "/api/batch": "api_batch", "/api/issues": "api_issues",
+    "/api/status": "api_status",
+    "/api/drives": "api_drives",
+    "/api/tree": "api_tree",
+    "/api/copies": "api_copies",
+    "/api/groups": "api_groups",
+    "/api/identical": "api_identical",
+    "/api/batches": "api_batches",
+    "/api/batch": "api_batch",
+    "/api/issues": "api_issues",
 }
 POST_ROUTES = {
-    "/api/open": "api_open", "/api/init": "api_init", "/api/close": "api_close",
-    "/api/settings": "api_settings", "/api/scan": "api_scan", "/api/stop": "api_stop",
-    "/api/reanalyze": "api_reanalyze", "/api/plan": "api_plan", "/api/quarantine": "api_quarantine",
-    "/api/restore": "api_restore", "/api/purge": "api_purge",
-    "/api/issue/resolve": "api_issue_resolve", "/api/forget_missing": "api_forget_missing",
+    "/api/open": "api_open",
+    "/api/init": "api_init",
+    "/api/close": "api_close",
+    "/api/settings": "api_settings",
+    "/api/scan": "api_scan",
+    "/api/stop": "api_stop",
+    "/api/reanalyze": "api_reanalyze",
+    "/api/plan": "api_plan",
+    "/api/quarantine": "api_quarantine",
+    "/api/restore": "api_restore",
+    "/api/purge": "api_purge",
+    "/api/issue/resolve": "api_issue_resolve",
+    "/api/forget_missing": "api_forget_missing",
 }
 
 

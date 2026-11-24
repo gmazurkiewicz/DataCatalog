@@ -4,19 +4,28 @@ A tool for organizing data on external drives: checksums for every file, finding
 (including whole folders), safe removal through a quarantine, and detection of silent file
 corruption. Runs on Windows and Linux (including Raspberry Pi). The UI opens in a web browser.
 
-Requires only **Python 3.10+**, with no `pip install` needed.
+The runtime uses the Python standard library only (Python 3.10+). The project is managed with
+[uv](https://docs.astral.sh/uv/), but plain Python works too.
 
 ## Status
 
-**Stage 1 (done):** scanning, duplicate analysis, quarantine, integrity verification, web UI.
-**Stage 2 (planned):** comparing and synchronizing the main drive with its backup (A ↔ B).
-**Stage 3 (planned):** drive health (SMART via `smartmontools`).
+- **Stage 1 (done):** scanning, duplicate analysis, quarantine, integrity verification, web UI.
+- **Stage 2 (planned):** comparing and synchronizing the main drive with its backup (A ↔ B).
+- **Stage 3 (planned):** drive health (SMART via `smartmontools`).
 
 ## Running
 
-**Windows**
-1. Install Python from python.org and tick "Add python.exe to PATH" in the installer.
-2. In the project folder run: `python run.py`. The browser opens automatically.
+**With uv (recommended)**: uv downloads a suitable Python by itself, nothing else to install.
+```
+uv run datacatalog                      # Windows: the browser opens automatically
+uv run datacatalog --help
+```
+To install it as a command available everywhere (e.g. on the Pi): `uv tool install .`
+
+**Without uv**: any Python 3.10+.
+```
+python run.py                           # or: python -m datacatalog
+```
 
 **Raspberry Pi / Linux**
 ```bash
@@ -24,11 +33,11 @@ Requires only **Python 3.10+**, with no `pip install` needed.
 sudo mkdir -p /mnt/drive
 sudo mount -t ntfs3 -o uid=$(id -u),gid=$(id -g) /dev/sda1 /mnt/drive
 
-python3 run.py --host 0.0.0.0 --password YOUR_PASSWORD --no-browser
+uv run datacatalog --host 0.0.0.0 --password YOUR_PASSWORD --no-browser
 ```
 Then open `http://<pi-address>:8765` on another computer (user `admin`, the password above).
 
-Options: `--port 8765`, `--open E:\` (open a drive right away), `--no-browser`.
+Options: `--port 8765`, `--open E:\` (open a drive right away), `--no-browser`, `--version`.
 
 ## Workflow
 
@@ -70,19 +79,27 @@ Options: `--port 8765`, `--open E:\` (open a drive right away), `--no-browser`.
 ## Project layout
 
 ```
-run.py              entry point (CLI options, starts the server)
-dc/catalog.py       SQLite schema and catalog access
-dc/drives.py        drive detection (Windows: ctypes, Linux: /proc/mounts + lsblk)
-dc/scanner.py       incremental scan, hashing, verification
-dc/analysis.py      per-folder duplicate statistics, identical folders
-dc/quarantine.py    safe move/restore/purge, repair from a good copy
-dc/server.py        HTTP JSON API + static files
-dc/static/          web UI (plain HTML/CSS/JS, no build step)
-tests/              pytest tests
+pyproject.toml              project metadata, `datacatalog` command, dev tools (uv)
+run.py                      run from a checkout without installing
+datacatalog/cli.py          command line options, starts the server
+datacatalog/catalog.py      SQLite schema and catalog access
+datacatalog/drives.py       drive detection (Windows: ctypes, Linux: /proc/mounts + lsblk)
+datacatalog/scanner.py      incremental scan, hashing, verification
+datacatalog/analysis.py     per-folder duplicate statistics, identical folders
+datacatalog/quarantine.py   safe move/restore/purge, repair from a good copy
+datacatalog/server.py       HTTP JSON API + static files
+datacatalog/static/         web UI (plain HTML/CSS/JS, no build step)
+tests/                      pytest tests
 ```
 
-## Tests
+## Development
 
 ```
-python -m pytest tests
+uv sync                     # creates .venv with pytest and ruff (dev group)
+uv run pytest               # tests
+uv run ruff check .         # lint
+uv run ruff format .        # format
 ```
+
+Runtime dependencies must stay empty (`dependencies = []` in `pyproject.toml`), so the app keeps
+running with nothing but Python. Development tools go to the `dev` dependency group.
