@@ -126,6 +126,9 @@ Linux can create them on NTFS, Windows cannot handle them.
 - Drives are identified by a `volume_id` in `.datacatalog/volume.json`, not by drive letter or mount point.
 - Checksums: BLAKE2b-256 (Python standard library). Over USB the bottleneck is disk reads, not the CPU.
 - Skipped: symlinks, `System Volume Information`, `$RECYCLE.BIN` and `.datacatalog` itself.
+- Catalog size depends on the number of files, not on the amount of data: about 0.4–0.6 KB per
+  file, 0.7–1 KB after the first sync (partner snapshot). For 1 TB that is ~10 MB for mostly
+  movies, ~100–200 MB for photos and music, ~0.5–1 GB for a million small files.
 
 ## Project layout
 
@@ -148,6 +151,8 @@ tests/                      pytest tests
 ## Testing
 
 Automated: `uv run pytest`. Manual test plan for real drives: [docs/TESTING.md](docs/TESTING.md).
+
+Ideas for the future: [docs/IDEAS.md](docs/IDEAS.md).
 
 ## Development
 
