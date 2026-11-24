@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataCatalog</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%232f6fde%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">DataCatalog</div>
+  <div id="disk-chip" class="disk-chip muted">No drive selected</div>
+  <div class="spacer"></div>
+  <div id="job" class="job hidden">
+    <div class="job-text"><span id="job-phase"></span> <span id="job-numbers" class="muted"></span></div>
+    <div class="bar"><div id="job-bar"></div></div>
+    <div id="job-current" class="job-current muted"></div>
+  </div>
+  <div class="actions">
+    <button id="btn-scan" class="primary" disabled title="Incremental scan: new and changed files">Scan</button>
+    <button id="btn-verify" disabled title="Re-read every file and detect corruption">Verify</button>
+    <button id="btn-stop" class="danger hidden">Stop</button>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button data-tab="drives" class="active">Drives</button>
+  <button data-tab="tree" disabled>Duplicate tree</button>
+  <button data-tab="groups" disabled>Duplicate groups</button>
+  <button data-tab="identical" disabled>Identical folders</button>
+  <button data-tab="quarantine" disabled>Quarantine</button>
+  <button data-tab="issues" disabled>Problems <span id="issues-badge" class="badge red hidden"></span></button>
+  <button data-tab="settings" disabled>Settings</button>
+</nav>
+
+<main>
+  <!-- DRIVES -->
+  <section id="tab-drives" class="tab">
+    <div class="toolbar">
+      <h2>Connected drives</h2>
+      <button id="btn-refresh-drives">Refresh</button>
+    </div>
+    <div id="summary" class="summary hidden"></div>
+    <div id="drive-list" class="cards"></div>
+    <details class="manual">
+      <summary>Enter a path manually</summary>
+      <div class="row">
+        <input id="manual-path" placeholder="e.g. E:\ or /mnt/drive">
+        <button id="btn-manual-open">Open</button>
+        <button id="btn-manual-init">Initialize</button>
+      </div>
+    </details>
+  </section>
+
+  <!-- TREE -->
+  <section id="tab-tree" class="tab hidden">
+    <div class="toolbar">
+      <label class="check"><input type="checkbox" id="only-dups" checked> Show duplicates only</label>
+      <label>Sort:
+        <select id="tree-sort">
+          <option value="waste">by duplicate size</option>
+          <option value="size">by size</option>
+          <option value="name">by name</option>
+        </select>
+      </label>
+      <div class="spacer"></div>
+      <span id="analysis-info" class="muted"></span>
+    </div>
+    <p class="hint">Select a whole folder to move all of its files that have a copy elsewhere to quarantine.
+      <span class="tag green">100% copy</span> means every file in the folder also exists outside it.</p>
+    <table class="tree">
+      <thead><tr><th class="c-check"></th><th>Name</th><th class="num">Size</th><th class="num">Files</th>
+        <th class="num">Has a copy outside the folder</th><th>Status</th></tr></thead>
+      <tbody id="tree-body"></tbody>
+    </table>
+  </section>
+
+  <!-- GROUPS -->
+  <section id="tab-groups" class="tab hidden">
+    <div class="toolbar">
+      <input id="groups-q" placeholder="Search paths…">
+      <label>Min. size:
+        <select id="groups-min">
+          <option value="1">all</option>
+          <option value="1048576">1 MB</option>
+          <option value="104857600">100 MB</option>
+          <option value="1073741824">1 GB</option>
+        </select>
+      </label>
+      <button id="groups-keep-first">On this page: keep the first copy, select the rest</button>
+      <div class="spacer"></div>
+      <span id="groups-info" class="muted"></span>
+    </div>
+    <div id="groups-list"></div>
+    <div class="pager"><button id="groups-prev">← Previous</button><button id="groups-next">Next →</button></div>
+  </section>
+
+  <!-- IDENTICAL -->
+  <section id="tab-identical" class="tab hidden">
+    <div class="toolbar">
+      <span class="muted">Folders with identical content (the same files, regardless of names).</span>
+      <div class="spacer"></div>
+      <button id="ident-keep-first">Keep the first folder in each group, select the rest</button>
+    </div>
+    <div id="ident-list"></div>
+  </section>
+
+  <!-- QUARANTINE -->
+  <section id="tab-quarantine" class="tab hidden">
+    <div class="toolbar"><h2>Quarantine</h2></div>
+    <p class="hint">Moved files are kept in <code>.datacatalog/quarantine</code> on the same drive and can be restored.
+      It is best to delete them permanently only after synchronizing with the backup drive.</p>
+    <table class="list">
+      <thead><tr><th>Batch</th><th class="num">Files</th><th class="num">Size</th><th>Status</th><th></th></tr></thead>
+      <tbody id="batch-body"></tbody>
+    </table>
+  </section>
+
+  <!-- PROBLEMS -->
+  <section id="tab-issues" class="tab hidden">
+    <h2>Suspected corruption</h2>
+    <p class="hint">The file has the same size and modification time as in the previous scan, but different content. This is a typical sign of silent data corruption.</p>
+    <table class="list"><thead><tr><th>File</th><th class="num">Size</th><th>Detected</th><th>Good copy on this drive</th><th></th></tr></thead>
+      <tbody id="integrity-body"></tbody></table>
+    <h2>Missing files</h2>
+    <p class="hint">Files that were in the catalog but were not found by the last scan (deleted or moved outside the app).</p>
+    <div id="missing-box"></div>
+    <h2>Errors in the last scan</h2>
+    <div id="errors-box"></div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="tab-settings" class="tab hidden">
+    <h2>Drive settings</h2>
+    <div class="form">
+      <label>Name <input id="set-name"></label>
+      <label>Role
+        <select id="set-role"><option value="main">Main</option><option value="backup">Backup</option><option value="other">Other</option></select>
+      </label>
+      <label>Scan only these folders (one per line, empty = whole drive)
+        <textarea id="set-include" rows="4" placeholder="Photos&#10;Documents/Work"></textarea></label>
+      <label>Skip these folders (paths from the drive root)
+        <textarea id="set-excludes" rows="4" placeholder="Programs&#10;Games/Steam"></textarea></label>
+      <div class="row"><button id="btn-save-settings" class="primary">Save</button>
+        <button id="btn-close-disk">Close drive</button></div>
+      <p class="muted" id="set-info"></p>
+    </div>
+  </section>
+</main>
+
+<div id="selbar" class="selbar hidden">
+  <span id="sel-text"></span>
+  <button id="sel-show">Show</button>
+  <button id="sel-clear">Clear</button>
+  <button id="sel-quarantine" class="primary">Check and move to quarantine</button>
+</div>
+
+<div id="modal" class="modal hidden"><div class="modal-box">
+  <div class="modal-head"><h3 id="modal-title"></h3><button id="modal-x" class="ghost">✕</button></div>
+  <div id="modal-body"></div>
+  <div id="modal-foot" class="modal-foot"></div>
+</div></div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
