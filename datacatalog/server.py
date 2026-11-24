@@ -116,6 +116,9 @@ class App:
             cat.set_meta("excludes", [e.strip().strip("/") for e in body["excludes"] if e.strip()])
         if "include" in body:
             cat.set_meta("include", [e.strip().strip("/") for e in body["include"] if e.strip()])
+        if "include_empty" in body:
+            cat.set_meta("include_empty", bool(body["include_empty"]))
+            self.cache.invalidate_and_rebuild(cat)
         if "name" in body or "role" in body:
             catmod.init_volume(cat.root, body.get("name", cat.info["name"]), body.get("role", cat.info["role"]))
             cat.info = catmod.read_volume_info(cat.root)
@@ -279,6 +282,67 @@ class App:
                 }
             )
         return {"total": total, "offset": offset, "groups": groups}
+
+    DUPFILE_SORT = {
+        "path": "f.path",
+        "folder": "f.dir",
+        "name": "f.name",
+        "size": "f.size",
+        "mtime": "f.mtime_ns",
+        "copies": "g.n",
+        "group": "g.wasted",
+    }
+
+    def api_dupfiles(self, q):
+        """Flat list of every file that has a duplicate, sortable by folder, name, size..."""
+        cat = self.need_cat()
+        offset = int(q.get("offset", 0))
+        limit = min(int(q.get("limit", 200)), 1000)
+        min_size = int(q.get("min_size", 1))
+        sort = self.DUPFILE_SORT.get(q.get("sort", "folder"), "f.dir")
+        order = "DESC" if q.get("order") == "desc" else "ASC"
+        conds, args = [], [min_size]
+        if q.get("q"):
+            conds.append("f.path LIKE ?")
+            args.append(f"%{q['q']}%")
+        if q.get("hash"):
+            conds.append("f.hash = ?")
+            args.append(q["hash"])
+        if q.get("folder") is not None and q.get("folder") != "":
+            conds.append("f.dir = ?")
+            args.append(q["folder"])
+        where = "".join(" AND " + c for c in conds)
+        base = f"""FROM files f JOIN (
+                     SELECT hash, COUNT(*) n, (COUNT(*)-1)*MAX(size) wasted FROM files
+                     WHERE status='ok' AND corrupt=0 AND hash IS NOT NULL AND size >= ?
+                     GROUP BY hash HAVING COUNT(*) > 1) g ON g.hash = f.hash
+                   WHERE f.status='ok' AND f.corrupt=0{where}"""
+        total = cat.q1(f"SELECT COUNT(*) {base}", args)[0]
+        rows = cat.q(
+            f"""SELECT f.path, f.dir, f.name, f.size, f.mtime_ns, f.hash, g.n copies, g.wasted {base}
+                ORDER BY {sort} {order}, f.path LIMIT ? OFFSET ?""",
+            args + [limit, offset],
+        )
+        files = []
+        for r in rows:
+            others = cat.q(
+                "SELECT dir FROM files WHERE status='ok' AND corrupt=0 AND hash=? AND path<>? ORDER BY path LIMIT 3",
+                (r["hash"], r["path"]),
+            )
+            files.append(
+                {
+                    "path": r["path"],
+                    "folder": r["dir"],
+                    "name": r["name"],
+                    "size": r["size"],
+                    "mtime": r["mtime_ns"] / 1e9,
+                    "hash": r["hash"],
+                    "copies": r["copies"],
+                    "group_wasted": r["wasted"],
+                    "other_folders": [o["dir"] for o in others],
+                }
+            )
+        return {"total": total, "offset": offset, "files": files}
 
     def api_identical(self, q):
         a = self.get_analysis()
@@ -595,6 +659,7 @@ GET_ROUTES = {
     "/api/tree": "api_tree",
     "/api/copies": "api_copies",
     "/api/groups": "api_groups",
+    "/api/dupfiles": "api_dupfiles",
     "/api/identical": "api_identical",
     "/api/batches": "api_batches",
     "/api/batch": "api_batch",

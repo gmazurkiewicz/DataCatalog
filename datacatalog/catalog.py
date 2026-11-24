@@ -211,6 +211,7 @@ class Catalog:
         last_done = self.q1("SELECT * FROM scans WHERE status='done' AND mode='scan' ORDER BY id DESC LIMIT 1")
         last_verify = self.q1("SELECT * FROM scans WHERE status='done' AND mode='verify' ORDER BY id DESC LIMIT 1")
         issues = self.q1("SELECT COUNT(*) FROM integrity_issues WHERE resolved=0")[0]
+        empty = self.q1("SELECT COUNT(*) FROM files WHERE status='ok' AND size=0")[0]
         missing = self.q1("SELECT COUNT(*) FROM files WHERE status='missing'")[0]
         quarantined = self.q1("SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='quarantined'")
         return {
@@ -227,6 +228,8 @@ class Catalog:
             "quarantined_files": quarantined[0],
             "quarantined_bytes": quarantined[1],
             "excludes": self.excludes(),
+            "empty_files": empty,
+            "include_empty": bool(self.get_meta("include_empty", False)),
         }
 
     # --- partner / synchronization helpers ---

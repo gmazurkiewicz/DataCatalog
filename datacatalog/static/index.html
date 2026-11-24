@@ -27,6 +27,7 @@
 <nav id="tabs">
   <button data-tab="drives" class="active">Drives</button>
   <button data-tab="tree" disabled>Duplicate tree</button>
+  <button data-tab="files" disabled>Duplicate files</button>
   <button data-tab="groups" disabled>Duplicate groups</button>
   <button data-tab="identical" disabled>Identical folders</button>
   <button data-tab="sync" disabled>Sync</button>
@@ -59,6 +60,7 @@
   <section id="tab-tree" class="tab hidden">
     <div class="toolbar">
       <label class="check"><input type="checkbox" id="only-dups" checked> Show duplicates only</label>
+      <label class="check" title="Empty files carry no data, so they are not treated as duplicates by default"><input type="checkbox" id="include-empty"> Include empty files</label>
       <label>Sort:
         <select id="tree-sort">
           <option value="waste">by duplicate size</option>
@@ -69,6 +71,7 @@
       <div class="spacer"></div>
       <span id="analysis-info" class="muted"></span>
     </div>
+    <div id="empty-hint"></div>
     <p class="hint">Select a whole folder to move all of its files that have a copy elsewhere to quarantine.
       <span class="tag green">100% copy</span> means every file in the folder also exists outside it.</p>
     <table class="tree">
@@ -78,6 +81,34 @@
     </table>
   </section>
 
+  <!-- DUPLICATE FILES (flat list) -->
+  <section id="tab-files" class="tab hidden">
+    <div class="toolbar">
+      <input id="files-q" placeholder="Search paths…">
+      <label>Min. size:
+        <select id="files-min">
+          <option value="1">all</option>
+          <option value="0">all + empty files</option>
+          <option value="1048576">1 MB</option>
+          <option value="104857600">100 MB</option>
+          <option value="1073741824">1 GB</option>
+        </select>
+      </label>
+      <span id="files-filters"></span>
+      <div class="spacer"></div>
+      <span id="files-info" class="muted"></span>
+    </div>
+    <p class="hint">Every file that has at least one duplicate. Click a column header to sort, a folder to show only that folder,
+      or the number of copies to show the whole group. Files with the same colour dot have identical content.</p>
+    <table class="list sortable">
+      <thead><tr><th class="c-check"></th>
+        <th data-sort="name">Name</th><th data-sort="folder">Folder</th><th class="num" data-sort="size">Size</th>
+        <th data-sort="mtime">Modified</th><th class="num" data-sort="copies">Copies</th><th>Other copies in</th></tr></thead>
+      <tbody id="files-body"></tbody>
+    </table>
+    <div class="pager"><button id="files-prev">← Previous</button><button id="files-next">Next →</button></div>
+  </section>
+
   <!-- GROUPS -->
   <section id="tab-groups" class="tab hidden">
     <div class="toolbar">
@@ -85,6 +116,7 @@
       <label>Min. size:
         <select id="groups-min">
           <option value="1">all</option>
+          <option value="0">all + empty files</option>
           <option value="1048576">1 MB</option>
           <option value="104857600">100 MB</option>
           <option value="1073741824">1 GB</option>

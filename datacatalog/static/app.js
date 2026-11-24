@@ -79,6 +79,7 @@ function renderSelbar() {
 }
 function rerenderSelectionViews() {
   if (state.tab === "tree") renderTree();
+  if (state.tab === "files") renderFiles();
   if (state.tab === "groups") renderGroups();
   if (state.tab === "identical") renderIdentical();
 }
@@ -88,12 +89,16 @@ function showTab(t) {
   state.tab = t;
   $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
   $$(".tab").forEach((s) => s.classList.toggle("hidden", s.id !== "tab-" + t));
-  ({ drives: loadDrives, tree: loadTree, groups: loadGroups, identical: loadIdentical, sync: loadSync, health: loadHealth,
+  ({ drives: loadDrives, tree: loadTree, files: loadFiles, groups: loadGroups, identical: loadIdentical, sync: loadSync, health: loadHealth,
      quarantine: loadBatches, issues: loadIssues, settings: loadSettings }[t] || (() => {}))();
 }
 $$("#tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
 
 // ---------- status ----------
+function scheduleStatus(ms) {
+  clearTimeout(scheduleStatus._t);
+  scheduleStatus._t = setTimeout(refreshStatus, ms);
+}
 async function refreshStatus() {
   try {
     const s = await api("/api/status");
@@ -129,19 +134,21 @@ async function refreshStatus() {
       }
     }
     if (state.tab === "drives") renderSummary();
-    setTimeout(refreshStatus, running || (s.analysis && s.analysis.building) ? 1000 : 4000);
+    scheduleStatus(running || (s.analysis && s.analysis.building) ? 1000 : 4000);
   } catch (e) {
     $("#disk-chip").textContent = "No connection to the server";
-    setTimeout(refreshStatus, 4000);
+    scheduleStatus(4000);
   }
 }
 function onJobFinished() {
+  scheduleStatus(800); // pick up the rebuilt analysis quickly
   if (state.tab === "sync") loadSync();
   if (state.tab === "issues") loadIssues();
   if (state.tab === "quarantine") loadBatches();
 }
 function rerenderAfterAnalysis() {
   if (state.tab === "tree") loadTree();
+  if (state.tab === "files") loadFiles();
   if (state.tab === "identical") loadIdentical();
   if (state.tab === "groups") loadGroups();
 }
@@ -297,7 +304,16 @@ async function fetchTree(path) {
   treeCache.set(path, d);
   return d;
 }
+function renderEmptyHint() {
+  const c = state.status && state.status.catalog;
+  if (!c) return;
+  $("#include-empty").checked = !!c.include_empty;
+  $("#empty-hint").innerHTML = c.empty_files && !c.include_empty
+    ? `<div class="notice amber">${files(c.empty_files)} with 0 bytes ${c.empty_files === 1 ? "is" : "are"} not shown as duplicates - empty files carry no data.
+       Tick <b>Include empty files</b> to see them too.</div>` : "";
+}
 async function loadTree() {
+  renderEmptyHint();
   const body = $("#tree-body");
   try {
     for (const p of Array.from(expanded)) {
@@ -374,12 +390,72 @@ document.addEventListener("change", (e) => {
   if (e.target.matches("input[data-sel]")) toggleSel(e.target.dataset.sel, e.target.checked);
 });
 $("#only-dups").onchange = () => { treeCache.clear(); loadTree(); };
+$("#include-empty").onchange = handle(async (e) => {
+  state.status = await api("/api/settings", { include_empty: e.target.checked });
+  treeCache.clear(); renderEmptyHint();
+  toast("Recomputing the analysis…");
+});
 $("#tree-sort").onchange = () => { treeCache.clear(); loadTree(); };
 async function showCopies(hash) {
   const d = await api("/api/copies?hash=" + encodeURIComponent(hash));
   modal(`Copies of the file (${d.copies.length})`, `<p class="muted">Size: ${fmtBytes(d.copies[0] && d.copies[0].size)}</p><ul>` +
     d.copies.map((c) => `<li>${esc(c.path)} <span class="muted">· ${fmtDate(c.mtime)}</span></li>`).join("") + "</ul>", [{ label: "Close" }]);
 }
+
+// ---------- duplicate files (flat, sortable) ----------
+const filesState = { offset: 0, limit: 200, sort: "folder", order: "asc", folder: null, hash: null, data: null };
+const hashColor = (h) => `hsl(${parseInt(h.slice(0, 6), 16) % 360} 65% 50%)`;
+const folderLabel = (f) => (f ? f : "(drive root)");
+async function loadFiles() {
+  const q = new URLSearchParams({ offset: filesState.offset, limit: filesState.limit, sort: filesState.sort,
+    order: filesState.order, min_size: $("#files-min").value, q: $("#files-q").value });
+  if (filesState.folder !== null) q.set("folder", filesState.folder);
+  if (filesState.hash) q.set("hash", filesState.hash);
+  filesState.data = await api("/api/dupfiles?" + q).catch((e) => { toast(e.message); return null; });
+  renderFiles();
+}
+function renderFiles() {
+  const d = filesState.data; if (!d) return;
+  $$("#tab-files th[data-sort]").forEach((th) => {
+    th.classList.toggle("sorted", th.dataset.sort === filesState.sort);
+    th.classList.toggle("desc", th.dataset.sort === filesState.sort && filesState.order === "desc");
+  });
+  const chips = [];
+  if (filesState.folder !== null) chips.push(`<span class="chip">Folder: ${esc(folderLabel(filesState.folder))}<button data-clear="folder">✕</button></span>`);
+  if (filesState.hash) chips.push(`<span class="chip">One group<button data-clear="hash">✕</button></span>`);
+  $("#files-filters").innerHTML = chips.join("");
+  $("#files-info").textContent = d.total ? `${fmtNum(d.offset + 1)}–${fmtNum(d.offset + d.files.length)} of ${files(d.total)}` : "No duplicates";
+  $("#files-prev").disabled = d.offset === 0;
+  $("#files-next").disabled = d.offset + d.files.length >= d.total;
+  $("#files-body").innerHTML = d.files.length ? d.files.map((f) => {
+    const cov = coveredBy(f.path); const on = sel.has(f.path) || !!cov;
+    return `<tr class="${on ? "sel" : ""}"><td class="c-check"><input type="checkbox" data-sel="${esc(f.path)}" ${on ? "checked" : ""} ${cov ? "disabled" : ""}></td>
+      <td><span class="dot" style="background:${hashColor(f.hash)}"></span>${esc(f.name)}</td>
+      <td class="folder"><a class="link" data-folder="${esc(f.folder)}">${esc(folderLabel(f.folder))}</a></td>
+      <td class="num">${fmtBytes(f.size)}</td><td>${fmtDate(f.mtime)}</td>
+      <td class="num"><a class="link" data-group="${esc(f.hash)}">${f.copies}</a></td>
+      <td class="muted">${f.other_folders.map((o) => esc(folderLabel(o))).join(" · ")}${f.copies - 1 > f.other_folders.length ? " …" : ""}</td></tr>`;
+  }).join("") : `<tr><td colspan="7" class="muted">No duplicates match.${state.status.catalog.empty_files && $("#files-min").value !== "0" ? " Empty files are hidden - choose “all + empty files”." : ""}</td></tr>`;
+}
+$("#tab-files thead").addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-sort]"); if (!th) return;
+  if (filesState.sort === th.dataset.sort) filesState.order = filesState.order === "asc" ? "desc" : "asc";
+  else { filesState.sort = th.dataset.sort; filesState.order = ["size", "copies", "mtime"].includes(th.dataset.sort) ? "desc" : "asc"; }
+  filesState.offset = 0; loadFiles();
+});
+$("#files-body").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-folder]"); const g = e.target.closest("[data-group]");
+  if (a) { filesState.folder = a.dataset.folder; filesState.offset = 0; loadFiles(); }
+  if (g) { filesState.hash = g.dataset.group; filesState.offset = 0; loadFiles(); }
+});
+$("#files-filters").addEventListener("click", (e) => {
+  const c = e.target.dataset.clear; if (!c) return;
+  filesState[c] = null; filesState.offset = 0; loadFiles();
+});
+$("#files-prev").onclick = () => { filesState.offset = Math.max(0, filesState.offset - filesState.limit); loadFiles(); };
+$("#files-next").onclick = () => { filesState.offset += filesState.limit; loadFiles(); };
+$("#files-min").onchange = () => { filesState.offset = 0; loadFiles(); };
+let fqTimer; $("#files-q").oninput = () => { clearTimeout(fqTimer); fqTimer = setTimeout(() => { filesState.offset = 0; loadFiles(); }, 350); };
 
 // ---------- duplicate groups ----------
 const groupsState = { offset: 0, limit: 50, data: null };

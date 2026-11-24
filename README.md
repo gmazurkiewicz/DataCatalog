@@ -50,8 +50,12 @@ Options: `--port 8765`, `--open E:\` (open a drive right away), `--no-browser`, 
 3. **Duplicate tree**: folders that contain duplicates. "Has a copy outside the folder" shows how much
    of a folder exists elsewhere too. A folder marked "100% copy" can be removed as a whole without
    losing data. Select folders or files and click "Check and move to quarantine".
-4. **Duplicate groups / Identical folders**: other views of the same data, with a
-   "keep the first copy, select the rest" shortcut.
+4. **Duplicate files**: a flat table of every file that has a duplicate, sortable by name, folder,
+   size, modification time and number of copies; click a folder to filter by it, or the number of
+   copies to see the whole group. **Duplicate groups / Identical folders**: other views of the same
+   data, with a "keep the first copy, select the rest" shortcut.
+   Empty (0-byte) files are not treated as duplicates by default - they carry no data. Tick
+   "Include empty files" in the duplicate tree to count them too.
 5. **Quarantine**: moved files can be restored. Permanent deletion requires typing `DELETE`.
 6. **Verify**: from time to time, re-reads every file and compares checksums. A file with the same
    size and modification time but different content is listed under **Problems**. If a good copy

@@ -33,6 +33,10 @@ SMART and long runs. Tick the boxes as you go.
 - [ ] Move a folder to quarantine; it disappears from Explorer and shows on the Quarantine tab.
 - [ ] Restore the batch: files are back with the same dates.
 - [ ] Move again and "Delete permanently" (type DELETE) on something you really want gone.
+- [ ] Duplicate files: sort by folder, name, size, modified and copies; click a folder and a copy count
+      to filter; select files and move them to quarantine.
+- [ ] Empty files: they are hidden from duplicates by default (a notice says how many); "Include empty
+      files" shows them.
 - [ ] Duplicate groups and Identical folders show sensible results; "Keep first" selects the rest.
 
 ## 4. Integrity

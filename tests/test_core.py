@@ -205,3 +205,40 @@ def test_http_api(disk):
         assert urllib.request.urlopen(base + "/").status == 200
     finally:
         httpd.shutdown()
+
+
+def test_empty_files_optional(tmp_path):
+    r = str(tmp_path / "d")
+    for rel in ("a/x.txt", "b/x.txt", "c/y.txt"):
+        write(r, rel, b"")
+    write(r, "c/z.txt", b"abc")
+    write(r, "d/z.txt", b"abc")
+    catalog.init_volume(r, "T", "main")
+    cat = catalog.Catalog(r)
+    scan(cat)
+    a = analysis.build(cat)
+    assert a.groups_total == 1 and a.dirs["a"].dup_files == 0
+    cat.set_meta("include_empty", True)
+    a = analysis.build(cat)
+    assert a.groups_total == 2 and a.dirs["a"].dup_files == 1
+    assert a.dirs["a"].to_dict()["fully_redundant"]
+
+
+def test_dupfiles_api_sorting(disk):
+    from datacatalog.server import App
+
+    app = App()
+    app._open(disk)
+    j = scanner.Job("scan")
+    scanner.Scanner(app.cat, j).run()
+    res = app.api_dupfiles({"sort": "folder"})
+    assert res["total"] == 8
+    folders = [f["folder"] for f in res["files"]]
+    assert folders == sorted(folders)
+    res = app.api_dupfiles({"sort": "size", "order": "desc"})
+    sizes = [f["size"] for f in res["files"]]
+    assert sizes == sorted(sizes, reverse=True)
+    one = app.api_dupfiles({"folder": "Docs"})
+    assert {f["name"] for f in one["files"]} == {"x.pdf", "x_kopia.pdf"}
+    grp = app.api_dupfiles({"hash": one["files"][0]["hash"]})
+    assert grp["total"] == 2 and grp["files"][0]["other_folders"] == ["Docs"]

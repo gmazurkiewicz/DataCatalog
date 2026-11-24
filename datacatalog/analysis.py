@@ -55,6 +55,7 @@ class Analysis:
         self.identical = []  # groups of identical directories
         self.built_at = None
         self.build_seconds = 0
+        self.include_empty = False
 
     def dir_stat(self, d):
         return self.dirs.get(d)
@@ -64,21 +65,23 @@ def build(cat):
     """Build the analysis on a separate connection so a running scan is not blocked."""
     conn = sqlite3.connect(cat.db_path, timeout=30)
     try:
-        return _build(conn)
+        return _build(conn, bool(cat.get_meta("include_empty", False)))
     finally:
         conn.close()
 
 
-def _build(conn):
+def _build(conn, include_empty=False):
     t0 = time.time()
     a = Analysis()
+    a.include_empty = include_empty
     hc = {}
     wasted = 0
     groups = 0
     for h, n, size in conn.execute(
         """SELECT hash, COUNT(*) n, MAX(size) s FROM files
-           WHERE status='ok' AND hash IS NOT NULL AND size > 0 AND corrupt=0
-           GROUP BY hash HAVING COUNT(*) > 1"""
+           WHERE status='ok' AND hash IS NOT NULL AND size >= ? AND corrupt=0
+           GROUP BY hash HAVING COUNT(*) > 1""",
+        (0 if include_empty else 1,),
     ):
         hc[h] = n
         wasted += (n - 1) * size
@@ -124,7 +127,7 @@ def _build(conn):
                 if is_dup:
                     s.dup_files += 1
                     s.dup_bytes += size
-            if h is not None and size == 0:
+            if h is not None and size == 0 and not include_empty:
                 # an empty file carries no data - treat it as "covered"
                 for x in anc:
                     dirs[x].out_files += 1
