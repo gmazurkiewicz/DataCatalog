@@ -119,6 +119,15 @@ Linux can create them on NTFS, Windows cannot handle them.
   drive's quarantine. A file that changed after compare is skipped.
 - By default the server only listens on this computer (127.0.0.1). Network access requires a password.
 
+## Updates and old catalogs
+
+Catalogs on the drives are versioned. A newer app upgrades an older catalog automatically,
+after saving a copy (`.datacatalog/catalog-vN.bak.db`). An older app still opens a catalog
+changed by a newer one as long as the changes were additive; if not, it refuses the drive and
+asks to be updated instead of misreading it. A catalog copied to another drive (e.g. a clone
+made with another tool) is detected and you decide whether it keeps its identity. Details and
+the rules for future format changes: [docs/DATA_FORMAT.md](docs/DATA_FORMAT.md).
+
 ## Design notes
 
 - The catalog (`.datacatalog/catalog.db`, SQLite) is stored on the drive itself, so it travels with
@@ -136,7 +145,8 @@ Linux can create them on NTFS, Windows cannot handle them.
 pyproject.toml              project metadata, `datacatalog` command, dev tools (uv)
 run.py                      run from a checkout without installing
 datacatalog/cli.py          command line options, starts the server
-datacatalog/catalog.py      SQLite schema and catalog access
+datacatalog/catalog.py      SQLite schema, catalog access, drive identity
+datacatalog/schema.py       catalog format versions and migrations
 datacatalog/drives.py       drive detection (Windows: ctypes, Linux: /proc/mounts + lsblk)
 datacatalog/scanner.py      incremental scan, hashing, verification
 datacatalog/analysis.py     per-folder duplicate statistics, identical folders

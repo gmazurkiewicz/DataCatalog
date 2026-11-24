@@ -19,8 +19,8 @@ import stat as stat_mod
 import threading
 import time
 
+from . import __version__, paths, schema
 from . import catalog as catmod
-from . import paths
 
 CHUNK = 1024 * 1024
 MTIME_TOLERANCE_NS = 1_000_000  # 1 ms - systems round timestamps differently
@@ -84,6 +84,7 @@ class Scanner:
     def __init__(self, cat: catmod.Catalog, job: Job):
         self.cat = cat
         self.job = job
+
         self.excl = {e.strip().strip("/").lower() for e in cat.excludes() if e.strip()}
         self.only = [p.strip().strip("/") for p in cat.get_meta("include", []) if p.strip()]
 
@@ -105,8 +106,8 @@ class Scanner:
     def _start(self):
         with self.cat.lock:
             cur = self.cat.conn.execute(
-                "INSERT INTO scans(mode,host,started_at,status) VALUES(?,?,?,'running')",
-                (self.job.mode, catmod.hostname(), self.job.started_at),
+                "INSERT INTO scans(mode,host,started_at,status,app_version) VALUES(?,?,?,'running',?)",
+                (self.job.mode, catmod.hostname(), self.job.started_at, __version__),
             )
             self.cat.conn.commit()
         self.job.scan_id = cur.lastrowid
@@ -336,6 +337,16 @@ class Scanner:
         return self._hash_rows(rows, verify=True)
 
     def run(self):
+        algo = self.cat.get_meta("hash_algorithm", schema.HASH_ALGORITHM)
+        if algo != schema.HASH_ALGORITHM:
+            self.job.message = (
+                f"This catalog uses the {algo} checksum, this version of DataCatalog uses "
+                f"{schema.HASH_ALGORITHM}. Update the app."
+            )
+            self.job.status = "failed"
+            self.job.phase = "done"
+            self.job.finished_at = time.time()
+            return self.job
         self._start()
         try:
             if self.job.mode == "verify":

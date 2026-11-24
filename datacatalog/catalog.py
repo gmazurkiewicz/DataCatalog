@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 
-from . import paths
+from . import __version__, paths, schema
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -100,8 +100,6 @@ CREATE TABLE IF NOT EXISTS q_batches (
 );
 """
 
-SCHEMA_VERSION = "1"
-
 
 def hostname():
     try:
@@ -137,12 +135,16 @@ def init_volume(root, name, role):
     }
     info["name"] = name
     info["role"] = role
-    info["schema"] = SCHEMA_VERSION
+    info.setdefault("schema", schema.SCHEMA_VERSION)
+    write_volume_info(root, info)
+    return info
+
+
+def write_volume_info(root, info):
     tmp = volume_file(root) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(info, f, ensure_ascii=False, indent=2)
     os.replace(tmp, volume_file(root))
-    return info
 
 
 class Catalog:
@@ -166,10 +168,78 @@ class Catalog:
             except sqlite3.DatabaseError:
                 pass
             self.conn.execute("PRAGMA synchronous=NORMAL")
-            self.conn.executescript(SCHEMA)
-            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(files)")}
-            if "corrupt" not in cols:
-                self.conn.execute("ALTER TABLE files ADD COLUMN corrupt INTEGER NOT NULL DEFAULT 0")
+            try:
+                self.migration = schema.prepare(self.conn, self.db_path, SCHEMA, info)
+            except BaseException:
+                self.conn.close()
+                raise
+            self.identity_mismatch = None
+            if not self.migration["newer"]:
+                self._check_identity(info)
+                # keep volume.json in step, so an older app can refuse the drive early
+                changed = (
+                    info.get("schema") != schema.SCHEMA_VERSION
+                    or info.get("schema_compat") != schema.compat_level(self.conn)
+                    or info.get("app_version") != __version__
+                )
+                if changed:
+                    info["schema"] = schema.SCHEMA_VERSION
+                    info["schema_compat"] = schema.compat_level(self.conn)
+                    info["app_version"] = __version__
+                    try:
+                        write_volume_info(root, info)
+                    except OSError:
+                        pass
+
+    # --- drive identity ---
+    def _check_identity(self, info):
+        """Remember the file system serial; notice when the catalog shows up on another one."""
+        from .drives import volume_serial
+
+        current = volume_serial(self.root)
+        if not current:
+            return
+        stored = info.get("serial")
+        if not stored:
+            info["serial"] = current
+            try:
+                write_volume_info(self.root, info)
+            except OSError:
+                pass
+        elif stored != current:
+            self.identity_mismatch = {"stored": stored, "current": current}
+
+    def adopt_identity(self):
+        """The same data moved to a new drive: keep the identity, remember the new serial."""
+        from .drives import volume_serial
+
+        self.info["serial"] = volume_serial(self.root)
+        write_volume_info(self.root, self.info)
+        self.identity_mismatch = None
+        self.journal("identity_adopted", "", detail=f"serial {self.info['serial']}")
+        with self.lock:
+            self.conn.commit()
+
+    def new_identity(self):
+        """This drive is a copy of another drive's catalog: give it its own identity.
+
+        The file list stays (it describes this drive's files after the next scan);
+        everything tied to the old identity (sync partner, snapshot, plan) is cleared."""
+        from .drives import volume_serial
+
+        old = self.info["volume_id"]
+        self.info["volume_id"] = str(uuid.uuid4())
+        self.info["serial"] = volume_serial(self.root)
+        self.info["created_at"] = time.time()
+        write_volume_info(self.root, self.info)
+        with self.lock:
+            self.conn.execute("DELETE FROM meta WHERE key IN ('partner', 'sync_plan')")
+            self.conn.execute("DELETE FROM partner_files")
+            self.conn.execute("DELETE FROM sync_plan")
+            self.conn.commit()
+        self.identity_mismatch = None
+        self.journal("new_identity", "", detail=f"was {old}")
+        with self.lock:
             self.conn.commit()
 
     def close(self):
@@ -229,6 +299,12 @@ class Catalog:
             "quarantined_bytes": quarantined[1],
             "excludes": self.excludes(),
             "empty_files": empty,
+            "identity_mismatch": self.identity_mismatch,
+            "schema": {
+                "version": self.q1("PRAGMA user_version")[0],
+                "app_schema": schema.SCHEMA_VERSION,
+                "migration": self.migration,
+            },
             "include_empty": bool(self.get_meta("include_empty", False)),
         }
 
@@ -249,7 +325,6 @@ class Catalog:
 
     def upsert_file(self, rel, size, mtime_ns, hash_):
         """Record a file the app has just written (hash already verified)."""
-        from . import paths
 
         now = time.time()
         with self.lock:

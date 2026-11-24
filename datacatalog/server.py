@@ -11,7 +11,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, analysis, drives, health, paths, quarantine, sync
+from . import __version__, analysis, drives, health, paths, quarantine, schema, sync
 from . import catalog as catmod
 from .scanner import Job, Scanner
 
@@ -70,7 +70,10 @@ class App:
             if self.partner is not None and os.path.realpath(self.partner.root) == os.path.realpath(root):
                 self.partner.close()
                 self.partner = None
-            self.cat = catmod.Catalog(root)
+            try:
+                self.cat = catmod.Catalog(root)
+            except schema.IncompatibleCatalog as e:
+                raise ApiError(str(e), 409) from e
             self.cache.invalidate_and_rebuild(self.cat)
 
     def api_open(self, body):
@@ -122,6 +125,18 @@ class App:
         if "name" in body or "role" in body:
             catmod.init_volume(cat.root, body.get("name", cat.info["name"]), body.get("role", cat.info["role"]))
             cat.info = catmod.read_volume_info(cat.root)
+        return self.api_status({})
+
+    def api_identity(self, body):
+        cat = self.need_cat()
+        with self.lock:
+            self.need_idle()
+            if body.get("action") == "adopt":
+                cat.adopt_identity()
+            elif body.get("action") == "new":
+                cat.new_identity()
+            else:
+                raise ApiError("Unknown action.")
         return self.api_status({})
 
     # --- status and scanning ---
@@ -408,12 +423,22 @@ class App:
         if info is None:
             raise ApiError("This drive has no catalog yet - initialize it.", 409)
         if info["volume_id"] == cat.info["volume_id"]:
-            raise ApiError("This is the drive that is already open.")
+            if os.path.realpath(root) == os.path.realpath(cat.root):
+                raise ApiError("This is the drive that is already open.")
+            raise ApiError(
+                "This drive has the same catalog identity as the open drive - it looks like a copy made with "
+                "another tool, .datacatalog folder included. Open it as the current drive and choose "
+                "'This is a different drive' on the Drives tab to give it its own identity."
+            )
         with self.lock:
             self.need_idle()
             if self.partner is not None:
                 self.partner.close()
-            self.partner = catmod.Catalog(root)
+            try:
+                self.partner = catmod.Catalog(root)
+            except schema.IncompatibleCatalog as e:
+                self.partner = None
+                raise ApiError(str(e), 409) from e
 
     def api_partner_open(self, body):
         root = body.get("root")
@@ -673,6 +698,7 @@ POST_ROUTES = {
     "/api/init": "api_init",
     "/api/close": "api_close",
     "/api/settings": "api_settings",
+    "/api/identity": "api_identity",
     "/api/scan": "api_scan",
     "/api/stop": "api_stop",
     "/api/reanalyze": "api_reanalyze",

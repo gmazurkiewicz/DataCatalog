@@ -206,6 +206,9 @@ def scope_filter(cat_a):
 def build_plan(cat_a, cat_b):
     """Compare two scanned catalogs and store the plan in cat_a (the main drive)."""
     ensure_plan_table(cat_a)
+    algo_a, algo_b = cat_a.get_meta("hash_algorithm"), cat_b.get_meta("hash_algorithm")
+    if algo_a != algo_b:
+        raise SyncError(f"The drives use different checksum algorithms ({algo_a} / {algo_b}).")
     hist = history(cat_a, cat_b)
     a_cursor = hist[0].get("journal_cursor_self", 0) if hist else 0
     conn = sqlite3.connect(cat_a.db_path, timeout=30)

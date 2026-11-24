@@ -226,9 +226,30 @@ function renderSummary() {
   if (c.files && c.last_scan && (!lastVerify || Date.now() / 1000 - lastVerify > 90 * 86400))
     box.innerHTML += `<div class="notice amber" style="flex-basis:100%">${lastVerify ? `The last verification was ${Math.floor((Date.now() / 1000 - lastVerify) / 86400)} days ago.` : "This drive has never been verified."}
       Run <b>Verify</b> every few months to detect silent corruption while a good copy still exists.</div>`;
+  if (c.identity_mismatch) box.innerHTML += `<div class="notice red" style="flex-basis:100%">
+      This catalog was created on another drive (file system serial ${esc(c.identity_mismatch.stored)}, this one is ${esc(c.identity_mismatch.current)}).
+      Did you move your data to a new drive, or is this a copy of another drive made with another tool?
+      <div class="row"><button id="btn-id-adopt">Same data, new drive - keep the identity</button>
+      <button id="btn-id-new" class="primary">This is a different drive - give it its own identity</button></div></div>`;
+  const mig = c.schema && c.schema.migration;
+  if (mig && mig.newer) box.innerHTML += `<div class="notice amber" style="flex-basis:100%">This drive's catalog was updated by a newer version of DataCatalog.
+      It works, but update the app to get all features (git pull, then uv sync).</div>`;
+  else if (mig && mig.backup) box.innerHTML += `<div class="notice green" style="flex-basis:100%">The catalog was upgraded to format v${mig.to}.
+      A copy of the previous version was saved as <code>${esc(mig.backup.split(/[\\/]/).pop())}</code> in the .datacatalog folder.</div>`;
   if (!c.last_scan) box.innerHTML += `<div class="notice amber" style="flex-basis:100%">This drive has not been scanned yet. Click <b>Scan</b>.
      The first scan of 1 TB over USB takes several hours, but it can be stopped and resumed.</div>`;
 }
+document.addEventListener("click", handle(async (e) => {
+  const id = e.target.id;
+  if (id !== "btn-id-adopt" && id !== "btn-id-new") return;
+  const run = handle(async () => {
+    state.status = await api("/api/identity", { action: id === "btn-id-adopt" ? "adopt" : "new" });
+    renderSummary(); toast("Saved.");
+  });
+  if (id === "btn-id-adopt") return run();
+  modal("New identity", `<p>This drive gets its own identity. Its sync history (partner drive, snapshot, plan) is cleared;
+    the file list is kept and updated by the next scan.</p>`, [{ label: "Cancel" }, { label: "Give new identity", cls: "primary", onClick: run }]);
+}));
 async function loadDrives() {
   renderSummary();
   const list = $("#drive-list");

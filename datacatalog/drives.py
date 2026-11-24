@@ -211,3 +211,46 @@ def list_drives():
     # Known drives first, then external ones, the system drive last.
     drives.sort(key=lambda d: (not d.get("known"), d.get("system", False), not d.get("mounted"), d.get("path") or ""))
     return drives
+
+
+def volume_serial(root):
+    """Serial number / UUID of the file system that holds `root`, or None.
+
+    Stored in volume.json to notice when a catalog was copied to another drive
+    (e.g. a backup drive cloned with another tool, .datacatalog folder included)."""
+    try:
+        if paths.IS_WINDOWS:
+            import ctypes
+            from ctypes import wintypes
+
+            k32 = ctypes.windll.kernel32
+            vol = ctypes.create_unicode_buffer(261)
+            if not k32.GetVolumePathNameW(ctypes.c_wchar_p(os.path.abspath(root)), vol, 261):
+                return None
+            serial = wintypes.DWORD()
+            if not k32.GetVolumeInformationW(
+                ctypes.c_wchar_p(vol.value), None, 0, ctypes.byref(serial), None, None, None, 0
+            ):
+                return None
+            return f"{serial.value:08X}"
+        real = os.path.realpath(root)
+        best, dev = "", None
+        with open("/proc/self/mounts", encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 2 or not parts[0].startswith("/dev/"):
+                    continue
+                mp = parts[1].replace("\\040", " ")
+                if (real == mp or real.startswith(mp.rstrip("/") + "/")) and len(mp) > len(best):
+                    best, dev = mp, parts[0]
+        if not dev:
+            return None
+        dev_real = os.path.realpath(dev)
+        by_uuid = "/dev/disk/by-uuid"
+        if os.path.isdir(by_uuid):
+            for name in os.listdir(by_uuid):
+                if os.path.realpath(os.path.join(by_uuid, name)) == dev_real:
+                    return name
+        return None
+    except Exception:
+        return None
