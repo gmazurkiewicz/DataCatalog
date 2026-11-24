@@ -20,6 +20,7 @@ function fmtDur(s) {
 const plural = (n, one, many = one + "s") => `${fmtNum(n)} ${n === 1 ? one : many}`;
 const files = (n) => plural(n, "file");
 const ROLE = { main: "Main", backup: "Backup", other: "Other" };
+const VERDICT = { good: "Good", warning: "Warning", bad: "Failing", unknown: "Unknown" };
 const PHASE = { walk: "Walking folders", hash: "Computing checksums", verify: "Verifying checksums", copy: "Copying", compare: "Comparing drives" };
 
 async function api(path, body) {
@@ -87,7 +88,7 @@ function showTab(t) {
   state.tab = t;
   $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
   $$(".tab").forEach((s) => s.classList.toggle("hidden", s.id !== "tab-" + t));
-  ({ drives: loadDrives, tree: loadTree, groups: loadGroups, identical: loadIdentical, sync: loadSync,
+  ({ drives: loadDrives, tree: loadTree, groups: loadGroups, identical: loadIdentical, sync: loadSync, health: loadHealth,
      quarantine: loadBatches, issues: loadIssues, settings: loadSettings }[t] || (() => {}))();
 }
 $$("#tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
@@ -109,6 +110,10 @@ async function refreshStatus() {
     $("#btn-verify").disabled = !c || running || !c.files;
     $("#btn-stop").classList.toggle("hidden", !running);
     renderJob(s.job);
+    const hb = $("#health-badge");
+    const hv = c && c.health ? c.health.verdict : null;
+    hb.classList.toggle("hidden", !(hv === "bad" || hv === "warning"));
+    hb.classList.toggle("red", hv === "bad");
     const ib = $("#issues-badge");
     const n = c ? c.integrity_issues : 0;
     ib.textContent = n; ib.classList.toggle("hidden", !n);
@@ -207,7 +212,13 @@ function renderSummary() {
     <div class="stat"><span class="muted">Reclaimable (duplicates)</span><b>${a.wasted_bytes != null ? fmtBytes(a.wasted_bytes) : "…"}</b></div>
     <div class="stat"><span class="muted">Last full scan</span><b>${fmtDate(c.last_full_scan && c.last_full_scan.finished_at)}</b></div>
     <div class="stat"><span class="muted">Last verification</span><b>${fmtDate(c.last_verify && c.last_verify.finished_at)}</b></div>
-    <div class="stat"><span class="muted">In quarantine</span><b>${fmtNum(c.quarantined_files)} · ${fmtBytes(c.quarantined_bytes)}</b></div>`;
+    <div class="stat"><span class="muted">In quarantine</span><b>${fmtNum(c.quarantined_files)} · ${fmtBytes(c.quarantined_bytes)}</b></div>
+    <div class="stat"><span class="muted">Health (SMART)</span><b>${c.health ? `<span class="tag ${{ good: "green", warning: "amber", bad: "red" }[c.health.verdict] || ""}">${esc(VERDICT[c.health.verdict])}</span>` : "not checked"}</b></div>
+    <div class="stat"><span class="muted">Last sync</span><b>${c.partner ? `${fmtDate(c.partner.synced_at)} · ${esc(c.partner.name)}` : "never"}</b></div>`;
+  const lastVerify = c.last_verify && c.last_verify.finished_at;
+  if (c.files && c.last_scan && (!lastVerify || Date.now() / 1000 - lastVerify > 90 * 86400))
+    box.innerHTML += `<div class="notice amber" style="flex-basis:100%">${lastVerify ? `The last verification was ${Math.floor((Date.now() / 1000 - lastVerify) / 86400)} days ago.` : "This drive has never been verified."}
+      Run <b>Verify</b> every few months to detect silent corruption while a good copy still exists.</div>`;
   if (!c.last_scan) box.innerHTML += `<div class="notice amber" style="flex-basis:100%">This drive has not been scanned yet. Click <b>Scan</b>.
      The first scan of 1 TB over USB takes several hours, but it can be stopped and resumed.</div>`;
 }
@@ -614,6 +625,79 @@ $("#btn-sync-run").onclick = () => {
     }) }]);
 };
 
+// ---------- health ----------
+async function loadHealth() {
+  const which = $("#health-which").value;
+  $("#health-which").querySelector('[value="partner"]').disabled = !(state.status && state.status.partner);
+  let d;
+  try { d = await api("/api/health?which=" + which); }
+  catch (e) { $("#health-body").innerHTML = `<p class="notice red">${esc(e.message)}</p>`; return; }
+  renderHealth(d);
+}
+function smartHelp(d) {
+  if (d.platform === "windows") return `<pre class="help">1. Install smartmontools from https://www.smartmontools.org (Windows installer).
+2. Start DataCatalog as administrator (right-click the terminal → Run as administrator).</pre>`;
+  return `<pre class="help">sudo apt install smartmontools
+# smartctl needs root. Either run DataCatalog as root, or allow smartctl without a password:
+sudo visudo -f /etc/sudoers.d/smartctl
+#   add the line:  ${esc("<your-user>")} ALL=(root) NOPASSWD: /usr/sbin/smartctl</pre>`;
+}
+function renderHealth(d) {
+  const box = $("#health-body");
+  const l = d.latest;
+  ["#btn-health-check", "#btn-health-short", "#btn-health-long"].forEach((b) => ($(b).disabled = !d.smartctl || !!d.device_error));
+  let html = `<p class="muted">${esc(d.drive.name)} · ${esc(d.drive.root)}${d.device ? ` · device ${esc(d.device)}` : ""}</p>`;
+  if (!d.smartctl) html += `<div class="notice amber">smartctl (smartmontools) is not installed.</div>` + smartHelp(d);
+  if (d.device_error) html += `<div class="notice amber">${esc(d.device_error)}</div>`;
+  if (!l) {
+    html += `<p>No reading yet. Click <b>Check now</b>.</p>`;
+  } else {
+    const s = l.summary; const v = s.values || {};
+    html += `<div class="health-head"><span class="verdict ${l.verdict}">${esc(VERDICT[l.verdict])}</span>
+        <span>${esc(s.model)}${s.serial ? ` · S/N ${esc(s.serial)}` : ""}${s.capacity ? ` · ${fmtBytes(s.capacity)}` : ""}</span>
+        <span class="muted">checked ${fmtDate(l.ts)}</span></div>`;
+    if (s.findings.length) html += s.findings.map((f) => `<div class="notice ${f.severity === "bad" ? "red" : f.severity === "warning" ? "amber" : "green"}">${esc(f.text)}</div>`).join("");
+    else html += `<div class="notice green">No problems found.</div>`;
+    if (s.self_test_running) html += `<div class="notice amber">${esc(s.self_test_running)}</div>`;
+    const kv = [
+      ["Temperature", v.temperature != null ? `${v.temperature} °C` : null],
+      ["Power-on time", v.power_on_hours != null ? `${fmtNum(v.power_on_hours)} h (${(v.power_on_hours / 24 / 365).toFixed(1)} years)` : null],
+      ["Power cycles", v.power_cycles != null ? fmtNum(v.power_cycles) : null],
+      ["Reallocated sectors", v.attr_5],
+      ["Pending sectors", v.attr_197],
+      ["Uncorrectable sectors", v.attr_198],
+      ["Reported uncorrectable", v.attr_187],
+      ["Media errors (NVMe)", v.media_errors],
+      ["Endurance used (NVMe)", v.percentage_used != null ? `${v.percentage_used} %` : null],
+      ["Last self-test", s.last_self_test ? `${s.last_self_test.type}: ${s.last_self_test.status}` : null],
+    ].filter(([, x]) => x !== null && x !== undefined);
+    html += `<div class="kv">${kv.map(([k, x]) => `<div><span class="muted">${esc(k)}</span><b>${esc(typeof x === "number" ? fmtNum(x) : x)}</b></div>`).join("")}</div>`;
+    if (s.attributes && s.attributes.length) html += `<details><summary>All SMART attributes (${s.attributes.length})</summary>
+      <table class="list"><thead><tr><th>ID</th><th>Attribute</th><th class="num">Value</th><th class="num">Worst</th><th class="num">Threshold</th><th class="num">Raw</th><th>Failed</th></tr></thead><tbody>` +
+      s.attributes.map((a) => `<tr class="${a.watched ? "watched" : ""}"><td>${a.id}</td><td>${esc(a.name)}</td><td class="num">${a.value ?? ""}</td><td class="num">${a.worst ?? ""}</td>
+        <td class="num">${a.thresh ?? ""}</td><td class="num">${esc(a.raw_string ?? a.raw)}</td><td>${esc(a.when_failed)}</td></tr>`).join("") + "</tbody></table></details>";
+  }
+  if (d.history.length > 1) html += `<h2>History</h2><table class="list"><thead><tr><th>Date</th><th>Verdict</th><th class="num">Temp.</th>
+      <th class="num">Reallocated</th><th class="num">Pending</th><th class="num">Uncorrectable</th></tr></thead><tbody>` +
+    d.history.map((h) => `<tr><td>${fmtDate(h.ts)}</td><td><span class="tag ${{ good: "green", warning: "amber", bad: "red" }[h.verdict] || ""}">${esc(VERDICT[h.verdict])}</span></td>
+      <td class="num">${h.values.temperature ?? "–"}</td><td class="num">${h.values.attr_5 ?? "–"}</td><td class="num">${h.values.attr_197 ?? "–"}</td><td class="num">${h.values.attr_198 ?? "–"}</td></tr>`).join("") + "</tbody></table>";
+  html += `<p class="hint">SMART shows the drive's own view of its mechanics and electronics. It complements, but does not replace, Verify
+    (which checks that your files are still intact). Check regularly: growing reallocated or pending sector counts are an early warning.</p>`;
+  box.innerHTML = html;
+}
+$("#health-which").onchange = loadHealth;
+$("#btn-health-check").onclick = handle(async () => {
+  $("#btn-health-check").disabled = true;
+  try { renderHealth(await api("/api/health/check", { which: $("#health-which").value })); toast("SMART reading saved."); }
+  finally { $("#btn-health-check").disabled = false; }
+});
+for (const [id, kind] of [["#btn-health-short", "short"], ["#btn-health-long", "long"]]) {
+  $(id).onclick = handle(async () => {
+    const r = await api("/api/health/selftest", { which: $("#health-which").value, kind });
+    toast(`${kind === "short" ? "Short" : "Extended"} self-test started${r.minutes ? ` (about ${r.minutes} min)` : ""}. Keep the drive connected, then click Check now.`, 7000);
+  });
+}
+
 // ---------- quarantine ----------
 async function loadBatches() {
   const { batches } = await api("/api/batches").catch(() => ({ batches: [] }));
@@ -663,6 +747,9 @@ async function loadIssues() {
   $("#missing-box").innerHTML = d.missing_total ? `<p>${files(d.missing_total)}.
     <button class="small" id="btn-forget-missing">Remove these entries from the catalog</button></p><ul>` +
     d.missing.map((m) => `<li>${esc(m.path)} <span class="muted">· ${fmtBytes(m.size)}</span></li>`).join("") + "</ul>"
+    : `<p class="muted">None.</p>`;
+  $("#collisions-box").innerHTML = d.collisions.length ? "<ul>" + d.collisions.map((x) =>
+    `<li>${esc(x.dir || "(drive root)")}: ${x.names.map((n) => `<code>${esc(n)}</code>`).join(" · ")} <span class="muted">(${x.type === "folder" ? "folders" : "files"})</span></li>`).join("") + "</ul>"
     : `<p class="muted">None.</p>`;
   $("#errors-box").innerHTML = d.errors.length ? "<ul>" + d.errors.map((e) => `<li>${esc(e.path)} <span class="muted">· ${esc(e.error)}</span></li>`).join("") + "</ul>"
     : `<p class="muted">None.</p>`;

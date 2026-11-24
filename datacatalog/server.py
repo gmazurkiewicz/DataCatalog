@@ -11,7 +11,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, analysis, drives, paths, quarantine, sync
+from . import __version__, analysis, drives, health, paths, quarantine, sync
 from . import catalog as catmod
 from .scanner import Job, Scanner
 
@@ -134,6 +134,8 @@ class App:
             out["catalog"] = self.cat.summary()
             out["catalog"]["include"] = self.cat.get_meta("include", [])
             out["catalog"]["partner"] = self.cat.partner()
+            h = health.latest(self.cat)
+            out["catalog"]["health"] = {"verdict": h["verdict"], "ts": h["ts"]} if h else None
             a = self.cache.current
             out["analysis"] = {
                 "building": self.cache.building,
@@ -457,6 +459,47 @@ class App:
         self._start_job(job, lambda: sync.run_sync(main, backup, job, quarantine_b))
         return self.api_status({})
 
+    # --- drive health ---
+    def _health_cat(self, which):
+        if which == "partner":
+            if self.partner is None:
+                raise ApiError("The second drive is not open.", 409)
+            return self.partner
+        return self.need_cat()
+
+    def api_health(self, q):
+        cat = self._health_cat(q.get("which", "main"))
+        out = {
+            "drive": {"name": cat.info["name"], "root": cat.root, "role": cat.info.get("role")},
+            "smartctl": health.find_smartctl(),
+            "platform": "windows" if paths.IS_WINDOWS else "linux",
+            "device": None,
+            "device_error": None,
+            "latest": health.latest(cat),
+            "history": health.history(cat),
+            "partner_open": self.partner is not None,
+        }
+        try:
+            out["device"] = health.device_for(cat.root)
+        except health.HealthError as e:
+            out["device_error"] = str(e)
+        return out
+
+    def api_health_check(self, body):
+        cat = self._health_cat(body.get("which", "main"))
+        try:
+            health.check(cat)
+        except health.HealthError as e:
+            raise ApiError(str(e)) from e
+        return self.api_health({"which": body.get("which", "main")})
+
+    def api_health_selftest(self, body):
+        cat = self._health_cat(body.get("which", "main"))
+        try:
+            return health.start_self_test(cat, body.get("kind", "short"))
+        except health.HealthError as e:
+            raise ApiError(str(e)) from e
+
     # --- problems ---
     def api_issues(self, q):
         cat = self.need_cat()
@@ -476,13 +519,24 @@ class App:
                 (last[0] if last else -1,),
             )
         ]
+        a = self.cache.current
+        key = (cat.root, a.built_at if a else None)
+        if getattr(self, "_collisions_key", None) != key:
+            self._collisions = analysis.name_collisions(cat)
+            self._collisions_key = key
         for i in issues:
             copy = cat.q1(
                 "SELECT path FROM files WHERE status='ok' AND corrupt=0 AND hash=? AND path<>? LIMIT 1",
                 (i["expected"], i["path"]),
             )
             i["good_copy"] = copy["path"] if copy else None
-        return {"integrity": issues, "missing": missing, "missing_total": missing_total, "errors": errors}
+        return {
+            "integrity": issues,
+            "missing": missing,
+            "missing_total": missing_total,
+            "errors": errors,
+            "collisions": self._collisions,
+        }
 
     def api_issue_resolve(self, body):
         cat = self.need_cat()
@@ -546,6 +600,7 @@ GET_ROUTES = {
     "/api/batch": "api_batch",
     "/api/issues": "api_issues",
     "/api/sync/status": "api_sync_status",
+    "/api/health": "api_health",
     "/api/sync/plan": "api_sync_plan",
 }
 POST_ROUTES = {
@@ -568,6 +623,8 @@ POST_ROUTES = {
     "/api/sync/compare": "api_sync_compare",
     "/api/sync/choose": "api_sync_choose",
     "/api/sync/run": "api_sync_run",
+    "/api/health/check": "api_health_check",
+    "/api/health/selftest": "api_health_selftest",
 }
 
 

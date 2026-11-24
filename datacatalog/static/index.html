@@ -31,6 +31,7 @@
   <button data-tab="identical" disabled>Identical folders</button>
   <button data-tab="sync" disabled>Sync</button>
   <button data-tab="quarantine" disabled>Quarantine</button>
+  <button data-tab="health" disabled>Health <span id="health-badge" class="badge red hidden">!</span></button>
   <button data-tab="issues" disabled>Problems <span id="issues-badge" class="badge red hidden"></span></button>
   <button data-tab="settings" disabled>Settings</button>
 </nav>
@@ -145,12 +146,29 @@
     </table>
   </section>
 
+  <!-- HEALTH -->
+  <section id="tab-health" class="tab hidden">
+    <div class="toolbar">
+      <h2>Drive health (SMART)</h2>
+      <select id="health-which"><option value="main">Open drive</option><option value="partner">Second drive</option></select>
+      <div class="spacer"></div>
+      <button id="btn-health-check" class="primary">Check now</button>
+      <button id="btn-health-short" title="About 2 minutes; the drive stays usable">Short self-test</button>
+      <button id="btn-health-long" title="Reads the whole surface; hours for large drives">Extended self-test</button>
+    </div>
+    <div id="health-body"></div>
+  </section>
+
   <!-- PROBLEMS -->
   <section id="tab-issues" class="tab hidden">
     <h2>Suspected corruption</h2>
     <p class="hint">The file has the same size and modification time as in the previous scan, but different content. This is a typical sign of silent data corruption.</p>
     <table class="list"><thead><tr><th>File</th><th class="num">Size</th><th>Detected</th><th>Good copy on this drive</th><th></th></tr></thead>
       <tbody id="integrity-body"></tbody></table>
+    <h2>Name collisions</h2>
+    <p class="hint">Names in the same folder that differ only by letter case (e.g. <code>Photo.jpg</code> and <code>photo.jpg</code>).
+      Linux can create them on NTFS, but Windows shows only one of them and copying them to a drive used on Windows fails. Rename one of them.</p>
+    <div id="collisions-box"></div>
     <h2>Missing files</h2>
     <p class="hint">Files that were in the catalog but were not found by the last scan (deleted or moved outside the app).</p>
     <div id="missing-box"></div>

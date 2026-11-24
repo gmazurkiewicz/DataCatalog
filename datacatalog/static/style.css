@@ -125,3 +125,15 @@ a.link { color: var(--accent); cursor: pointer; text-decoration: none; }
 .items-head { display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; }
 td.path { word-break: break-all; }
 td.reason { color: var(--muted); font-size: 12px; }
+
+.health-head { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.verdict { font-size: 18px; font-weight: 700; padding: 6px 14px; border-radius: 10px; }
+.verdict.good { background: var(--green-soft); color: var(--green); }
+.verdict.warning { background: var(--amber-soft); color: var(--amber); }
+.verdict.bad { background: var(--red-soft); color: var(--red); }
+.verdict.unknown { background: var(--row-hover); color: var(--muted); }
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin: 12px 0; }
+.kv div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.kv b { display: block; font-size: 16px; }
+tr.watched td { font-weight: 600; }
+pre.help { background: var(--row-hover); padding: 10px; border-radius: 8px; white-space: pre-wrap; }

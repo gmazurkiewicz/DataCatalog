@@ -4,14 +4,15 @@ A tool for organizing data on external drives: checksums for every file, finding
 (including whole folders), safe removal through a quarantine, and detection of silent file
 corruption. Runs on Windows and Linux (including Raspberry Pi). The UI opens in a web browser.
 
-The runtime uses the Python standard library only (Python 3.10+). The project is managed with
+The runtime uses the Python standard library only (Python 3.10+). Drive health additionally
+needs the external `smartctl` program from [smartmontools](https://www.smartmontools.org). The project is managed with
 [uv](https://docs.astral.sh/uv/), but plain Python works too.
 
 ## Status
 
 - **Stage 1 (done):** scanning, duplicate analysis, quarantine, integrity verification, web UI.
 - **Stage 2 (done):** comparing and synchronizing the main drive with its backup (one-way mirror A → B).
-- **Stage 3 (planned):** drive health (SMART via `smartmontools`).
+- **Stage 3 (done):** drive health (SMART via `smartmontools`), name-collision check, verification reminder.
 
 ## Running
 
@@ -79,6 +80,27 @@ snapshot of the other drive's file list; this is how the next compare knows whic
 Every copied file is hashed while copying and must match its catalog checksum, it is written to a
 temporary name, flushed to disk and only then renamed into place. Modification times are preserved.
 
+## Drive health (Health tab)
+
+Reads SMART data with `smartctl` and stores every reading in the drive's catalog, so the history
+travels with the drive. The verdict (Good / Warning / Failing) is based on the overall SMART status,
+attributes below their thresholds, reallocated / pending / uncorrectable sectors, NVMe media errors
+and spare, temperature and the last self-test - and on **growth** of the bad counters since the
+previous check, which is the most useful early warning. Short and extended self-tests can be started
+from the tab.
+
+Setup:
+- **Windows:** install smartmontools from smartmontools.org and start DataCatalog as administrator.
+  The drive is addressed by its letter (`E:`).
+- **Raspberry Pi / Linux:** `sudo apt install smartmontools`. smartctl needs root: run DataCatalog as
+  root, or allow it without a password (`sudo visudo -f /etc/sudoers.d/smartctl`, line
+  `youruser ALL=(root) NOPASSWD: /usr/sbin/smartctl`); DataCatalog then uses `sudo -n smartctl`.
+- USB enclosures often hide SMART; DataCatalog retries with `-d sat`. Some enclosures do not pass
+  SMART through at all - then only Verify can tell you about the data.
+
+The Problems tab also lists **name collisions**: names in one folder that differ only by letter case.
+Linux can create them on NTFS, Windows cannot handle them.
+
 ## Safety rules
 
 - A file is moved to quarantine only if at least one of its copies stays on the drive and is not
@@ -113,10 +135,15 @@ datacatalog/scanner.py      incremental scan, hashing, verification
 datacatalog/analysis.py     per-folder duplicate statistics, identical folders
 datacatalog/quarantine.py   safe move/restore/purge, repair from a good copy
 datacatalog/sync.py         compare plan and verified one-way mirror to the backup drive
+datacatalog/health.py       SMART readings via smartctl, evaluation and history
 datacatalog/server.py       HTTP JSON API + static files
 datacatalog/static/         web UI (plain HTML/CSS/JS, no build step)
 tests/                      pytest tests
 ```
+
+## Testing
+
+Automated: `uv run pytest`. Manual test plan for real drives: [docs/TESTING.md](docs/TESTING.md).
 
 ## Development
 

@@ -223,3 +223,33 @@ class AnalysisCache:
                 self.building = True
             self._run(cat)
         return self.current
+
+
+def name_collisions(cat, limit=500):
+    """Names in the same folder that differ only by letter case (e.g. Photo.jpg and photo.jpg).
+
+    Linux can create them on NTFS, but Windows sees only one of them, and copying such a
+    folder to a drive used on Windows fails."""
+    conn = sqlite3.connect(cat.db_path, timeout=30)
+    try:
+        conn.create_function("fold", 1, lambda s: s.casefold() if s else s, deterministic=True)
+        out = []
+        for d, names in conn.execute(
+            """SELECT dir, GROUP_CONCAT(name, char(31)) FROM files WHERE status='ok'
+               GROUP BY dir, fold(name) HAVING COUNT(*) > 1 LIMIT ?""",
+            (limit,),
+        ):
+            out.append({"dir": d, "names": sorted(names.split("\x1f")), "type": "file"})
+        groups = defaultdict(set)
+        for (d,) in conn.execute("SELECT DISTINCT dir FROM files WHERE status='ok'"):
+            # every ancestor folder name counts too
+            while d:
+                groups[(paths.parent_of(d).casefold(), paths.name_of(d).casefold())].add(d)
+                d = paths.parent_of(d)
+        for (_parent, _name), variants in groups.items():
+            if len(variants) > 1 and len(out) < limit:
+                v = sorted(variants)
+                out.append({"dir": paths.parent_of(v[0]), "names": [paths.name_of(x) for x in v], "type": "folder"})
+        return out
+    finally:
+        conn.close()
